@@ -182,11 +182,13 @@ impl SdMmcHost {
         | (if words <= tx_wm { 1 << 1 } else { 0 })                // fifo_tx_watermark
         | (if self.fifo.is_empty() { 1 << 2 } else { 0 })          // fifo_empty
         | (if self.fifo.len() >= FIFO_CAP_BYTES { 1 << 3 } else { 0 }) // fifo_full
-        | (u32::from(present) << 8)                                // data3_status mirrors presence
-        | (if self.data.as_ref().is_some_and(|d| d.write) { 1 << 9 } else { 0 }) // data_busy
-        | (if self.data.is_some() { 1 << 10 } else { 0 })          // data_fsm_busy
-        | (self.resp_index & 0x3f) << 16                           // response_index
-        | (words & 0x1fff) << 16                                   // fifo_count
+        | (u32::from(present) << 8)                                // status.data3_status ("reads 1 if card is present")
+        | (if self.data.as_ref().is_some_and(|d| d.write) { 1 << 9 } else { 0 }) // status.data_busy
+        | (if self.data.is_some() { 1 << 10 } else { 0 })          // status.data_fsm_busy
+        // sdmmc_struct.h status fields (IDF v5.5.1): response_index is 6 bits at [16:11],
+        // fifo_count is 13 bits at [29:17] — adjacent, not overlapping.
+        | (self.resp_index & 0x3f) << 11                           // status.response_index [16:11]
+        | (words & 0x1fff) << 17                                   // status.fifo_count [29:17]
     }
 
     /// CDETECT: bit N reads 0 if card N is present; only slot 1 can carry the model's card.
@@ -269,7 +271,13 @@ impl SdMmcHost {
     fn refill_read(&mut self) {
         loop {
             let Some(x) = &self.data else { return };
-            if x.write || x.left == 0 { return; }
+            if x.write { return; }
+            if x.left == 0 {
+                // A zero-length read (BYTCNT = 0, or the card's stream already empty) completes
+                // at once — DTO, data FSM idle — instead of wedging data_fsm_busy forever.
+                self.finish_data();
+                return;
+            }
             let (left, space) = (x.left, FIFO_CAP_BYTES - self.fifo.len());
             if space < 4 { return; }
             let want = left.min(space as u32) as usize;
@@ -363,6 +371,7 @@ impl Device for SdMmcHost {
 mod tests {
     use super::*;
     use crate::Device;
+    use crate::sdcard::crc7;
 
     const R1_ERRORS: u32 = 0xfdff_e008;                            // the X4 driver's mask
 
@@ -741,6 +750,161 @@ mod tests {
         assert_ne!(r[0] & (1 << 22), 0, "ILLEGAL_COMMAND");
         let r = x4.command(1, 0, (1 << 6) | (1 << 8)).unwrap();        // CMD1 is MMC-only
         assert_ne!(r[0] & (1 << 22), 0, "ILLEGAL_COMMAND");
-        assert_eq!(x4.read(0x48) & (0xf << 9), 0, "card stayed in idle");
+        // The card stayed idle: the R1's state bits [12:9] are 0. (Card state lives in the R1,
+        // not in STATUS — whose bits there are data_busy/data_fsm_busy/response_index at their
+        // real IDF field positions.)
+        assert_eq!(r[0] & (0xf << 9), 0, "card stayed in idle (R1 state bits)");
+    }
+
+    /// Re-derives the CRC7 field of an R2 payload from the latched RESP words: bytes RESP0..3
+    /// reassemble the register (RESP0 = lowest 32 bits), and byte 15 bits [7:1] must equal the
+    /// CRC7 of the payload's first 15 bytes with the end bit set.
+    fn assert_r2_crc7(words: [u32; 4], what: &str) {
+        let mut b = [0u8; 16];
+        b[12..16].copy_from_slice(&words[0].to_be_bytes());
+        b[8..12].copy_from_slice(&words[1].to_be_bytes());
+        b[4..8].copy_from_slice(&words[2].to_be_bytes());
+        b[0..4].copy_from_slice(&words[3].to_be_bytes());
+        assert_eq!(b[15] & 1, 1, "R2 {what}: end bit set");
+        assert_eq!(b[15] >> 1, crc7(&b[..15]), "R2 {what}: CRC7 verifies against its own payload");
+    }
+
+    /// SDMMC-01 regression, through the real controller: a card presenting CSD v2 must encode
+    /// C_SIZE at its true spec positions (bytes 7..9 = CSD[69:48], +1 units of 512 KiB), which
+    /// is exactly where the firmware-native decode (`initialize()`, the same RESP field reads
+    /// as the Crusty `platform/sdmmc.rs::capacity`) reads them. With the old packing, the
+    /// c_size-4096 card whose real capacity is 4,195,328 blocks decoded as 67,109,888.
+    #[test]
+    fn sdhc_card_decodes_native_field_positions_and_lba_bounds_off_the_wire() {
+        // Fabricated SDHC geometry (c_size = 1 → (1+1)·1024 = 2048 blocks) with an
+        // exactly-covering 1 MiB image — the v2 wire path without a multi-GiB fixture.
+        let mut x4 = X4::new(None);
+        x4.host.card = Some(SdCard::for_test_geometry(vec![0u8; 2048 * 512], 2048, true));
+        assert_eq!(x4.initialize(), 2048, "firmware-native parse of the real wire CSD");
+        assert!(x4.host.card.as_ref().unwrap().high_capacity());
+        assert_r2_crc7(x4.command(9, 1 << 16, (1 << 6) | (1 << 7) | (1 << 8)).unwrap(), "CSD");
+        assert_r2_crc7(x4.command(10, 1 << 16, (1 << 6) | (1 << 7) | (1 << 8)).unwrap(), "CID");
+        // Block addressing: the last valid LBA round-trips; one past the card end answers
+        // OUT_OF_RANGE with no data (DRTO for the refused read) and never touches the media.
+        let mut block = [0u8; 512];
+        for (i, b) in block.iter_mut().enumerate() { *b = ((i * 13 + 7) & 0xff) as u8; }
+        x4.block_write(2047, &block).unwrap();                         // arg is the raw LBA
+        assert_eq!(&x4.block_read(2047).unwrap()[..8], &block[..8], "last valid LBA of an SDHC card");
+        assert_eq!(x4.block_read(2048), Err("controller"));
+        assert_ne!(x4.read(0x30) & (1 << 31), 0, "OUT_OF_RANGE in the latched R1");
+        let poison = [0x5a; 512];
+        assert_eq!(x4.block_write(2048, &poison), Err("card"));
+        assert_ne!(x4.read(0x30) & (1 << 31), 0, "OUT_OF_RANGE for the rejected write too");
+        assert_eq!(&x4.host.image().unwrap()[2047 * 512..2047 * 512 + 4], &block[..4],
+            "the out-of-range write touched nothing");
+    }
+
+    /// SDMMC-01 regression across representative C_SIZE values, decoded off the latched
+    /// response at the native field positions — never through the card's own builder.
+    #[test]
+    fn sdhc_c_size_wire_packing_matches_representative_geometries() {
+        // c_size 0, the exact SDMMC-01 reproducer value (4096) and a value carrying weights
+        // in all three bytes ([21:16] = 0x2F, [15:8] = 0x70, [7:0] = 0xA3).
+        for (blocks, c_size) in [(1024u32, 0u32), (4097 * 1024, 4096), (0x2F70A4 * 1024, 0x2F70A3)] {
+            let mut x4 = X4::new(None);
+            x4.host.card = Some(SdCard::for_test_geometry(Vec::new(), blocks, true));
+            assert_eq!(x4.initialize(), blocks, "native RESP decode for c_size {c_size:#x}");
+        }
+    }
+
+    /// SDMMC-03 regression: an exactly-empty image must not panic the constructors (the former
+    /// path underflowed `C_SIZE+1` in build_csd), and must not present a zero-capacity card.
+    #[test]
+    fn empty_image_attaches_as_the_smallest_blank_card() {
+        let mut x4 = X4::new(Some(Vec::new()));
+        assert_eq!(x4.initialize(), 4, "empty image presents the smallest representable capacity");
+        assert!(!x4.host.card.as_ref().unwrap().high_capacity());
+        assert_eq!(x4.host.image().unwrap().len(), 4 * 512, "image padded to the CSD capacity");
+        assert_eq!(x4.block_read(0).unwrap(), [0u8; 512], "blank padding is readable within capacity");
+        assert_eq!(x4.block_read(4 * 512), Err("controller"));
+        assert_ne!(x4.read(0x30) & (1 << 31), 0, "OUT_OF_RANGE one past the rounded capacity");
+    }
+
+    /// SDMMC-02 trigger (a): a data command with BYTCNT = 0 used to store a left=0 transfer
+    /// that refill_read refused to finish — no DTO, data_fsm_busy stuck forever. A zero-byte
+    /// transfer now completes at once for both directions.
+    #[test]
+    fn zero_bytcnt_data_commands_resolve_with_dto_and_zero_counts() {
+        let mut x4 = X4::new(Some(X4::patterned(128 * 512)));
+        assert_eq!(x4.initialize(), 128);
+        x4.write(0, 2);                                                // CTRL fifo_reset
+        x4.write(0x1c, 512);                                           // BLKSIZ
+        x4.write(0x20, 0);                                             // BYTCNT = 0
+        x4.write(0x44, u32::MAX);
+        x4.write(0x28, 0);
+        x4.write(0x2c, 17 | (1 << 6) | (1 << 8) | (1 << 9) | (1 << 13) | (1 << 16) | (1 << 29) | (1 << 31));
+        x4.result().unwrap();
+        assert_ne!(x4.read(0x44) & INT_DTO, 0, "zero-length read completes with DTO");
+        assert_eq!(x4.read(0x48) & (1 << 10), 0, "data FSM idle — no wedge");
+        assert_eq!((x4.read(0x48) >> 17) & 0x1fff, 0, "the FIFO received nothing");
+        assert_eq!(x4.read(0x5c), 0, "TCBCNT counts zero bytes");
+        assert_eq!(x4.read(0x60), 0, "TBBCNT counts zero bytes");
+        assert_eq!(x4.read(0x30) & R1_ERRORS, 0, "the card itself answered normally");
+        x4.write(0, 2);                                                // fifo_reset, then write
+        x4.write(0x20, 0);                                             // BYTCNT = 0 (BLKSIZ kept)
+        x4.write(0x44, u32::MAX);
+        x4.write(0x2c, 24 | (1 << 6) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 13) | (1 << 16) | (1 << 29) | (1 << 31));
+        x4.result().unwrap();
+        assert_ne!(x4.read(0x44) & INT_DTO, 0, "zero-length write completes with DTO");
+        assert_eq!(x4.read(0x48) & (1 << 10), 0, "data FSM idle after the write too");
+        assert_eq!(x4.host.dirty_bytes(), 0, "nothing was accepted");
+        assert_eq!(&x4.block_read(0).unwrap()[..8], &[0, 1, 2, 3, 4, 5, 6, 7],
+            "the controller still works normally afterwards");
+    }
+
+    /// SDMMC-02 trigger (b): a CMD18 whose 4096-byte promise would cross the image end used
+    /// to leave the stream dry with no completion path. The card now promises only the media
+    /// it holds, so the transfer resolves with DTO after those bytes.
+    #[test]
+    fn cmd18_at_the_media_end_delivers_what_exists_and_resolves() {
+        let mut x4 = X4::new(Some(X4::patterned(128 * 512)));
+        assert_eq!(x4.initialize(), 128);
+        x4.write(0x1c, 512);                                           // BLKSIZ
+        x4.write(0x20, 2048);                                          // BYTCNT: 4 blocks
+        x4.write(0x44, u32::MAX);
+        x4.write(0x28, 127 * 512);                                     // CMD18 at the last sector
+        x4.write(0x2c, 18 | (1 << 6) | (1 << 8) | (1 << 9) | (1 << 13) | (1 << 16) | (1 << 29) | (1 << 31));
+        let mut data = Vec::new();
+        for _ in 0..1_000 {
+            if x4.read(0x48) & (1 << 2) == 0 {
+                data.extend_from_slice(&x4.read(0x200).to_le_bytes());
+            } else if x4.read(0x44) & INT_DTO != 0 {
+                break;
+            }
+        }
+        assert_eq!(data.len(), 512, "only the bytes the media holds actually arrive");
+        assert_eq!(data, X4::patterned(128 * 512)[127 * 512..].to_vec());
+        assert_eq!(x4.read(0x5c), 512, "TCBCNT counts the media-limited transfer");
+        assert_eq!(x4.read(0x60), 512, "TBBCNT counts the media-limited transfer");
+        assert_eq!(x4.read(0x48) & (1 << 10), 0, "data FSM idle — no wedge");
+        assert_eq!(&x4.block_read(0).unwrap()[..8], &[0, 1, 2, 3, 4, 5, 6, 7],
+            "the controller still works normally afterwards");
+    }
+
+    /// SDMMC-05 regression: STATUS.response_index sits at [16:11] and STATUS.fifo_count at
+    /// [29:17] (sdmmc_struct.h, IDF v5.5.1) — adjacent widths, never overlapping.
+    #[test]
+    fn status_response_index_and_fifo_count_use_the_idf_field_positions() {
+        let mut x4 = X4::new(Some(X4::patterned(128 * 512)));
+        assert_eq!(x4.initialize(), 128);
+        // initialize()'s last response-latched command on a v1 (SDSC) card is CMD16
+        // (set before the fast-clock switch). Its index reads at STATUS[16:11].
+        let st = x4.read(0x48);
+        assert_eq!((st >> 11) & 0x3f, 16, "response_index at STATUS[16:11]");
+        assert_eq!((st >> 17) & 0x1fff, 0, "fifo_count is empty before any transfer");
+        // A block read refills the whole 512-byte block behind the driver (functional
+        // timing): fifo_count counts 128 words, response_index shows the data command.
+        x4.start_block(0);
+        x4.issue(17);
+        let mid = x4.read(0x48);
+        assert_eq!((mid >> 11) & 0x3f, 17, "response_index follows the data command");
+        assert_eq!((mid >> 17) & 0x1fff, 128, "512 bytes count as 128 words at STATUS[29:17]");
+        for _ in 0..127 { let _ = x4.read(0x200); }                    // drain like the driver
+        assert_eq!((x4.read(0x48) >> 17) & 0x1fff, 1, "fifo_count falls as the driver drains");
     }
 }

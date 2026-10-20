@@ -5,8 +5,9 @@
 //!
 //! Register/protocol facts follow the SD Physical Layer Simplified Specification (response and CSD
 //! field layouts) as the X4 firmware's `embedded_sdmmc` parses them: CSD v1 for capacities up to
-//! 2 GiB (C_SIZE [73:62], C_SIZE_MULT [49:47], READ_BL_LEN [83:80]), CSD v2 above (C_SIZE [69:48],
-//! 512 KiB units). TAAC/NSAC/current/R2W fields are advisory values real cards vary on; nothing the
+//! 2 GiB (C_SIZE [73:62], C_SIZE_MULT [49:47], READ_BL_LEN [83:80]), CSD v2 above (C_SIZE [69:48]
+//! packed across bytes 7..9 in 512 KiB units, READ_BL_LEN fixed at 9). TAAC/NSAC/current/R2W
+//! fields are advisory values real cards vary on; nothing the
 //! emulated drivers parse.
 
 /// Card states (SD spec state numbers, R1 bits [12:9]). The model never enters the Data/Rcv/Prg
@@ -46,6 +47,8 @@ pub const R1_ILLEGAL_COMMAND: u32 = 1 << 22;
 pub const R1_APP_CMD: u32 = 1 << 7;
 
 /// One SD card backed by an in-memory image. Attach one to an `SdMmcHost` (slot 1, the X4's slot).
+/// Any image length is accepted: an empty image presents the smallest representable (4-sector)
+/// card — never a zero-capacity one, and never a panic.
 pub struct SdCard {
     /// 512-byte sectors; padded at attach to the CSD-declared capacity.
     image: Vec<u8>,
@@ -70,9 +73,10 @@ pub struct SdCard {
     dirty_bytes: u32,
 }
 impl SdCard {
-    /// Attach a card whose image is `bytes` (any length; padded up to the CSD-representable
-    /// capacity). The card powers up in idle state; the host must run the initialization
-    /// sequence (CMD0, CMD8, ACMD41…) before block I/O, as real cards require.
+    /// Attach a card whose image is `bytes` (any length, including empty; padded up to the
+    /// CSD-representable capacity — an empty image becomes the smallest representable card).
+    /// The card powers up in idle state; the host must run the initialization sequence (CMD0,
+    /// CMD8, ACMD41…) before block I/O, as real cards require.
     pub fn new(bytes: Vec<u8>) -> SdCard {
         let (capacity_blocks, high_capacity) = capacity_for(bytes.len());
         let mut image = bytes;
@@ -108,6 +112,22 @@ impl SdCard {
     /// Bytes written since attach (the host's save-back hint for a disposable fixture).
     pub fn dirty_bytes(&self) -> u32 { self.dirty_bytes }
     fn mark_dirty(&mut self, n: u32) { self.dirty_bytes += n; }
+
+    /// Test-only construction with an explicit logical geometry: the real card fields, CSD and
+    /// host contract without forcing a multi-GiB fixture allocation. `capacity_blocks` must
+    /// obey the same +1 law the CSD encodes ((C_SIZE+1)·1024 blocks for v2). Tests that only
+    /// decode the CSD off these cards may pass a shorter image; I/O then simply has no media
+    /// past the image end.
+    #[cfg(test)]
+    pub(crate) fn for_test_geometry(image: Vec<u8>, capacity_blocks: u32, high_capacity: bool) -> SdCard {
+        SdCard {
+            image, capacity_blocks, high_capacity,
+            csd: build_csd(capacity_blocks, high_capacity),
+            cid: build_cid(),
+            rca: 0, state: State::Idle, app_next: false, init_pending: true,
+            powered: true, write_protected: false, stream: 0, stream_left: 0, dirty_bytes: 0,
+        }
+    }
 
     /// Run one command. `index` is the raw command number (app-command pairing via CMD55 is the
     /// card's own state). Called only while the card is powered.
@@ -189,8 +209,15 @@ impl SdCard {
             // CMD17 READ_SINGLE_BLOCK / CMD18 READ_MULTIPLE: R1 then a data stream.
             (17 | 18, _) if self.state == State::Tran => match self.sector_of(arg) {
                 Ok(sector) => {
+                    // A multi-block read never promises bytes past the media end: the card can
+                    // only supply the image it holds (sector_of validated the start; the host
+                    // caps the transfer with BYTCNT), so a stream that would cross the end
+                    // carries fewer bytes and the transfer still completes with DTO.
                     let len = if index == 17 { 512 } else { 4096 };
-                    self.stream = sector * 512;
+                    let offset = u64::from(sector) * 512;
+                    let len =
+                        (len as u64).min(self.image.len() as u64 - offset) as u32;
+                    self.stream = offset as u32;
                     self.stream_left = len;
                     CardReply { response: Some(r1(self.state, 0)), read_bytes: Some(len), accept_write: false }
                 }
@@ -262,9 +289,11 @@ impl SdCard {
 
 /// Capacity from an image length: the smallest CSD-representable capacity covering every byte.
 /// CSD v1 (≤ 2 GiB) expresses `bytes = (C_SIZE+1) << (MULT+2) << READ_BL_LEN` with C_SIZE ≤ 4095;
-/// CSD v2 (SDHC) expresses `(C_SIZE+1) * 512 KiB`. Returns (blocks, high_capacity).
+/// CSD v2 (SDHC) expresses `(C_SIZE+1) * 512 KiB`. Returns (blocks, high_capacity). An empty
+/// image presents the smallest representable card (4 sectors: one granule at READ_BL_LEN 512,
+/// C_SIZE_MULT 0) — a zero-capacity card would underflow `C_SIZE+1` in the CSD.
 pub fn capacity_for(bytes: usize) -> (u32, bool) {
-    let blocks = bytes.div_ceil(512) as u64;
+    let blocks = (bytes.div_ceil(512) as u64).max(1);
     if bytes <= 2 << 30 {
         let mut best: Option<(u64, u64, u32, u32)> = None;         // (cap, c_size+1, mult, bl)
         for bl in [9u32, 10, 11] {
@@ -289,15 +318,19 @@ pub fn capacity_for(bytes: usize) -> (u32, bool) {
 fn build_csd(blocks: u32, high_capacity: bool) -> [u32; 4] {
     let mut b = [0u8; 16];
     if high_capacity {
-        // CSD v2: structure 1, C_SIZE in 512 KiB units, READ_BL_LEN fixed at 9.
+        // CSD v2 (SDHC): structure 1, C_SIZE in 512 KiB units, READ_BL_LEN fixed at 9
+        // (SD Physical Layer Simplified Specification, CSD v2.0 field table). C_SIZE [69:48]
+        // packs across bytes 7..9: byte 7 bits [5:0] = C_SIZE[21:16] (CSD[69:64]), byte 8 =
+        // C_SIZE[15:8], byte 9 = C_SIZE[7:0] — the positions the firmware's
+        // `platform/sdmmc.rs::capacity` reads off the RESP words (RESP2 & 0x3f, RESP1 >> 16).
+        // Byte 6 (CSD[79:72]) is reserved in v2 and stays 0.
         b[0] = 1 << 6;
         b[1] = 0x0e; b[2] = 100; b[3] = 0x32;
         b[4] = 0x05; b[5] = 0xd0 | 9;                          // CCC advisory, READ_BL_LEN 512
         let c_size = (blocks as u64 / 1024) - 1;
-        b[6] = ((c_size >> 20) as u8) & 3;
-        b[7] = (c_size >> 12) as u8;
-        b[8] = (c_size >> 4) as u8;
-        b[9] = ((c_size & 0xf) << 4) as u8;
+        b[7] = ((c_size >> 16) as u8) & 0x3f;                  // C_SIZE[21:16] at CSD[69:64]
+        b[8] = (c_size >> 8) as u8;                            // C_SIZE[15:8]  at CSD[63:56]
+        b[9] = c_size as u8;                                   // C_SIZE[7:0]   at CSD[55:48]
     } else {
         // CSD v1: pick the encoding `capacity_for` chose (smallest covering capacity).
         let mut best: Option<(u64, u64, u32, u32)> = None;     // (cap, c_size+1, mult, bl)
@@ -354,15 +387,68 @@ fn build_cid() -> [u32; 4] {
      u32::from_be_bytes(b[0..4].try_into().unwrap())]
 }
 
-/// CRC7 (x^7+x^3+1) over the MSB-first bits of `data`, as the SD spec computes register CRCs.
-fn crc7(data: &[u8]) -> u8 {
+/// CRC7 (polynomial x^7+x^3+1) over the `data` bytes' bits MSB-first, as the SD protocol's
+/// CRC field is computed: each data bit XORs with the register's top bit at the feedback
+/// point — the register carries the remainder of message·x⁷. Verified against a definition-level
+/// long-division reference and the canonical SD frame: CMD0's token (0x40 00 00 00 00) computes
+/// 0x4a, which every host transmits as 0x95 = (0x4a << 1) | 1. `pub(crate)` so host tests can
+/// re-derive the CRC7 field inside real CMD2/CMD9 responses.
+pub(crate) fn crc7(data: &[u8]) -> u8 {
     let mut crc = 0u8;
     for byte in data {
         for bit in (0..8).rev() {
-            let msb = crc & 0x40 != 0;
-            crc = (crc << 1) & 0x7f | ((byte >> bit) & 1);
-            if msb { crc ^= 0x12; }
+            let fb = ((crc >> 6) & 1) ^ ((byte >> bit) & 1);
+            crc = (crc << 1) & 0x7f;
+            if fb != 0 { crc ^= 0x09; }                        // x^7 folds to x^3+1 in 7 bits
         }
     }
     crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The canonical SD frame: CMD0 GO_IDLE (0x40 00 00 00 00) transmits 0x95 = (0x4a << 1) | 1.
+    /// The former bit-0-entry/0x12-mask loop produced 0x04 (wire 0x09), which was non-spec and
+    /// broke every CID/CSD CRC field it computed.
+    #[test]
+    fn crc7_matches_the_protocol_reference_frame() {
+        assert_eq!(crc7(&[0x40, 0, 0, 0, 0]), 0x4a);
+    }
+
+    /// Every host-representable capacity must round-trip through its real CSD field positions
+    /// (the same positions the firmware's `platform/sdmmc.rs::capacity` reads).
+    #[test]
+    fn csd_capacity_round_trips_through_the_native_field_positions() {
+        let cases = [(4u32, false), (4_194_304, false), (4_195_328, true), (8_388_608, true)];
+        for (blocks, hc) in cases {
+            let csd = build_csd(blocks, hc);
+            match csd[3] >> 30 {
+                0 => {
+                    let size = ((csd[2] & 0x3ff) << 2) | (csd[1] >> 30);
+                    let block_len = (csd[2] >> 16) & 15;
+                    let mult = (csd[1] >> 15) & 7;
+                    let bytes = ((u64::from(size) + 1) << (mult + 2)) << block_len;
+                    assert_eq!(bytes / 512, u64::from(blocks), "v1 round trip at {blocks}");
+                }
+                1 => {
+                    let size = ((csd[2] & 0x3f) << 16) | (csd[1] >> 16);
+                    assert_eq!((u64::from(size) + 1) * 1024, u64::from(blocks), "v2 round trip at {blocks}");
+                }
+                s => panic!("CSD structure must be 0 or 1, got {s}"),
+            }
+        }
+    }
+
+    /// Capacity selection shape: SDSC rounding, the 2 GiB v1/v2 boundary, and safe empty input.
+    #[test]
+    fn capacity_for_rounds_representable_capacities_and_survives_empty() {
+        assert_eq!(capacity_for(0), (4, false));
+        assert_eq!(capacity_for(1), (4, false));
+        assert_eq!(capacity_for(512), (4, false));
+        assert_eq!(capacity_for(2 << 30), (4_194_304, false), "2 GiB is the largest SDSC");
+        assert_eq!(capacity_for((2 << 30) + 1), (4_195_328, true), "smallest SDHC: c_size 4096");
+        assert_eq!(capacity_for(4 << 30), (8_388_608, true));
+    }
 }
