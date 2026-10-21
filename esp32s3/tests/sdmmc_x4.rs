@@ -24,6 +24,65 @@ fn set_gate(p: &mut Peripherals, clk: bool, rst: bool) {
 
 fn fixture() -> Vec<u8> { (0..8193usize * 512).map(|i| (i % 251) as u8).collect() }
 
+fn dma_bus() -> esp32s3::bus::SocBus {
+    let mut bus = esp32s3::bus::SocBus::new(2 << 20, 2 << 20, [0; 6]);
+    bus.periph.sdmmc.attach_card(vec![0xa5; 128 * 512]);
+    x4_initialize(&mut bus.periph);
+    bus
+}
+
+fn dma_command(bus: &mut esp32s3::bus::SocBus, write: bool, owner: bool, buffer: u32) {
+    use emu_core::Bus;
+    const DESC: u32 = 0x3fc9_0000;
+    for (offset, value) in [(0, (u32::from(owner) << 31) | (1 << 4) | (1 << 3) | (1 << 2)),
+        (4, 512), (8, buffer), (12, 0)] { bus.write32(DESC + offset, value).unwrap(); }
+    for (offset, value) in [(0, (1 << 25) | (1 << 4)), (0x80, 1 << 7), (0x88, DESC),
+        (0x90, 0x3ff), (0x8c, 0x3ff), (0x44, u32::MAX), (0x1c, 512), (0x20, 512), (0x28, 0),
+        (0x2c, (if write { 24 | (1 << 10) } else { 17 }) | (1 << 6) | (1 << 8) | (1 << 9) |
+            (1 << 16) | (1 << 29) | (1 << 31))] { bus.write32(SDMMC + offset, value).unwrap(); }
+}
+
+#[test]
+fn idmac_moves_data_and_returns_descriptor_ownership() {
+    use emu_core::Bus;
+    let mut bus = dma_bus();
+    dma_command(&mut bus, false, true, 0x3fc9_1000);
+    assert_eq!(bus.read32(0x3fc9_1000).unwrap(), 0xa5a5_a5a5);
+    assert_eq!(bus.read32(0x3fc9_0000).unwrap() >> 31, 0);
+    assert_ne!(bus.read32(SDMMC + 0x44).unwrap() & (1 << 3), 0);
+    for offset in (0..512).step_by(4) { bus.write32(0x3fc9_1000 + offset, 0x1234_5678).unwrap(); }
+    dma_command(&mut bus, true, true, 0x3fc9_1000);
+    assert_eq!(&bus.periph.sdmmc.image().unwrap()[..4], &[0x78, 0x56, 0x34, 0x12]);
+    assert_eq!(bus.read32(0x3fc9_0000).unwrap() >> 31, 0);
+    assert_eq!(bus.read32(SDMMC + 0x8c).unwrap() & 3, 1);
+    bus.write32(SDMMC + 0x8c, u32::MAX).unwrap();
+    assert_eq!(bus.read32(SDMMC + 0x8c).unwrap(), 0);
+}
+
+#[test]
+fn idmac_unowned_descriptor_waits_for_poll_demand() {
+    use emu_core::Bus;
+    let mut bus = dma_bus();
+    dma_command(&mut bus, false, false, 0x3fc9_1000);
+    assert_eq!(bus.read32(SDMMC + 0x44).unwrap() & (1 << 3), 0);
+    let control = bus.read32(0x3fc9_0000).unwrap();
+    bus.write32(0x3fc9_0000, control | (1 << 31)).unwrap();
+    bus.write32(SDMMC + 0x84, 1).unwrap();
+    assert_eq!(bus.read32(0x3fc9_1000).unwrap(), 0xa5a5_a5a5);
+    assert_ne!(bus.read32(SDMMC + 0x44).unwrap() & (1 << 3), 0);
+}
+
+#[test]
+fn idmac_refuses_registers_as_dma_memory() {
+    use emu_core::Bus;
+    let mut bus = dma_bus();
+    dma_command(&mut bus, true, true, 0x6000_4000);
+    assert_eq!(&bus.periph.sdmmc.image().unwrap()[..4], &[0xa5; 4]);
+    assert_eq!(bus.read32(SDMMC + 0x44).unwrap() & (1 << 3), 0);
+    assert_ne!(bus.read32(SDMMC + 0x8c).unwrap() & (1 << 2), 0);
+    assert_ne!(bus.read32(0x3fc9_0000).unwrap() >> 31, 0);
+}
+
 /// The X4 driver's card-initialization sequence through the absolute register addresses.
 /// Returns (parsed CSD capacity in blocks, high-capacity OCR bit, RCA).
 fn x4_initialize(p: &mut Peripherals) -> (u32, bool, u32) {
@@ -175,12 +234,16 @@ fn sdmmc_interrupt_source_is_30_and_rcc_pulses_reset_the_block() {
     let rst_on = rsys(&mut p, 0x24) | (1 << 7);
     wsys(&mut p, 0x24, rst_on);                                     // RST pulse: assert…
     set_gate(&mut p, true, false);                                  // …and release
-    // Block configurable again after the pulse; an update command raises the source once the
-    // driver's default intmask and CTRL.int_enable are in place.
+    // Clock updates are internal CIU handshakes, not card command completions
+    // (IDF 6.1 sdmmc_host.c sdmmc_host_clock_update_command polls CMD.START).
+    // A subsequent real CMD0 must raise the configured command interrupt.
     wr(&mut p, 0x24, u32::MAX);
     let ctrl = rd(&mut p, 0) | (1 << 4);                           // CTRL.int_enable
     wr(&mut p, 0, ctrl);
     wr(&mut p, 0x2c, (1 << 21) | (1 << 13) | (1 << 16) | (1 << 29) | (1 << 31));
+    assert_eq!(rd(&mut p, 0x2c) & (1 << 31), 0, "clock update clears START");
+    assert_eq!(rd(&mut p, 0x40), 0, "clock update has no CMD_DONE interrupt");
+    wr(&mut p, 0x2c, (1 << 13) | (1 << 16) | (1 << 29) | (1 << 31));
     let st = p.source_status();
     assert_ne!(st[SRC_SDMMC / 32] & (1 << (SRC_SDMMC % 32)), 0, "source 30 asserted");
     assert_ne!(rd(&mut p, 0x40) & (1 << 2), 0, "mintsts mirrors the masked status");

@@ -7,10 +7,10 @@
 //! reserved. Controller timing is functional: commands complete within the register write that
 //! starts them (write data phases complete as the FIFO fills), never pretending physical latency.
 //!
-//! Only slot 1 carries a card (the X4's wiring: GPIO40 DAT, 41 CLK, 42 CMD, slot-1 signals
-//! `SDHOST_C*_2`). Slot 0 reads absent. The internal-DMA data path (CTRL.use_internal_dma) is not
-//! modelled — the block has no bus master here — and honestly never completes: a driver that
-//! enables it sees a data timeout, not fabricated success.
+//! Only slot 1 carries a card (X4 GPIO40 DAT, 41 CLK, 42 CMD). Internal DMA additionally
+//! follows IDF v6.1 soc/esp32s3/register/soc/sdmmc_struct.h and esp_driver_sdmmc/src/
+//! sd_trans_sdmmc.c: 16-byte chained descriptors, explicit ownership, W1C status and
+//! receive/transmit completion. This remains a functional model, not card timing calibration.
 use crate::device::{Device, WriteEffect};
 use crate::regram::RegRam;
 use crate::sdcard::{SdCard, CardReply};
@@ -39,6 +39,17 @@ const HCON: u32 = (1 << 0) | (1 << 5) | (1 << 6) | (1 << 7) | (19 << 10) | (1 <<
 /// chunks to the card as they reach `blksiz`.
 struct DataXfer { write: bool, left: u32, total: u32, accept: bool }
 
+struct DmaXfer { write: bool, left: u32, descriptor: u32 }
+
+/// Checked bus access supplied by the SoC. DMA never reads registers as memory.
+pub trait SdDmaMemory {
+    fn word(&mut self, address: u32) -> Option<u32>;
+    fn write_word(&mut self, address: u32, value: u32) -> bool;
+    fn valid_data(&self, address: u32, count: usize) -> bool;
+    fn read_data(&mut self, address: u32, count: usize) -> Option<Vec<u8>>;
+    fn write_data(&mut self, address: u32, data: &[u8]) -> bool;
+}
+
 /// The SDMMC host block. Mount as a `Device` (the S3 registers it at block 0x28) and attach a
 /// card image through `attach_card` — the image bytes come from the board/CLI layer, never file
 /// I/O here.
@@ -50,6 +61,7 @@ pub struct SdMmcHost {
     resp_index: u32,
     fifo: VecDeque<u8>,
     data: Option<DataXfer>,
+    dma: Option<DmaXfer>,
     pub card: Option<SdCard>,
     /// SYSTEM gate state, kept current by the chip's `pre_access`/SYSTEM-write hooks
     clock_enabled: bool, held_in_reset: bool,
@@ -65,7 +77,7 @@ impl SdMmcHost {
             // SDMMC_RST_N (0x78): "bit N resets card N, active low"; the power-on value is not in
             // the IDF headers — both slots assumed out of card-reset (the IDF LL never touches it).
             uhs: 0, rst_n: 3, clock_reg: 0, resp_index: 0,
-            fifo: VecDeque::new(), data: None, card: None,
+            fifo: VecDeque::new(), data: None, dma: None, card: None,
             clock_enabled: true, held_in_reset: false, log: false,
         }
     }
@@ -147,7 +159,7 @@ impl SdMmcHost {
             0x00 => {                                              // CTRL: reset bits self-clear
                 if v & 1 != 0 { self.controller_reset(); }
                 if v & (1 << 1) != 0 { self.fifo_reset(); }
-                if v & (1 << 2) != 0 { self.ram.write(0x80, 1); }  // DMA reset: IDMAC is RegRam here
+                if v & (1 << 2) != 0 { self.dma = None; self.ram.write(0x8c, 0); }
                 self.ctrl = v & 0xffff_fff8;
             }
             0x04 => self.pwren = v,
@@ -165,6 +177,9 @@ impl SdMmcHost {
             0x4c => self.fifoth = v,
             0x74 => self.uhs = v,
             0x78 => self.rst_n = v,
+            0x80 => { self.ram.write(off, v & !1); if v & 1 != 0 { self.dma = None; self.ram.write(0x8c, 0); } }
+            0x84 => self.ram.write(0x8c, self.ram.read(0x8c) & !(1 << 4)),
+            0x8c => self.ram.write(off, self.ram.read(off) & !v),
             0x800 => self.clock_reg = v,
             // FIFO data port: the word window the X4 driver streams blocks through.
             o @ 0x200..=0x3ff => { let _ = o; self.fifo_push_word(v); }
@@ -197,6 +212,7 @@ impl SdMmcHost {
     fn wrtprt(&self) -> u32 { if self.card().is_some_and(SdCard::write_protected) { 1 << 1 } else { 0 } }
 
     fn controller_reset(&mut self) {
+        self.dma = None;
         self.fifo_reset();
         self.rintsts = 0;
         self.resp = [0; 4];
@@ -220,8 +236,9 @@ impl SdMmcHost {
         let write = cmd & (1 << 10) != 0;
         self.cmd = cmd & !(1 << 31);                               // taken: start_command clears
         if update {
-            // Clock-update command: an internal CIU register apply, nothing reaches the card.
-            self.rintsts |= INT_CMD_DONE;
+            // IDF 6.1's update_clock_registers polls START only. This internal
+            // CIU operation has no card response or CMD_DONE interrupt; an
+            // invented completion would enter the SDK queue as a stale event.
             return;
         }
         if slot != 1 {                                             // only slot 1 is wired
@@ -238,14 +255,22 @@ impl SdMmcHost {
         };
         let bytcnt = self.bytcnt;
         let reply: CardReply = card.command(index, self.cmdarg);
+        if self.log { eprintln!("[sdmmc] CMD{index} arg={:#x} response={:?} bytes={bytcnt}", self.cmdarg, reply.response); }
         match reply.response {
             Some(words) => { self.resp = words; self.resp_index = u32::from(index); self.rintsts |= INT_CMD_DONE; }
-            None => self.rintsts |= if expect_response { INT_RTO } else { INT_CMD_DONE },
+            None => self.rintsts |= if expect_response { INT_RTO | INT_CMD_DONE } else { INT_CMD_DONE },
         }
         if !data { return; }
         if self.ctrl & (1 << 25) != 0 {                            // CTRL.use_internal_dma
-            if self.log { eprintln!("[sdmmc] internal-DMA data path is not modelled; data phase will time out"); }
-            return;                                                // no data ever moves: driver times out
+            if self.ram.read(0x80) & (1 << 7) == 0 { return; }     // BMOD.enable
+            if (write && !reply.accept_write) || (!write && reply.read_bytes.is_none()) {
+                self.rintsts |= INT_DRTO;
+                return;
+            }
+            self.dma = Some(DmaXfer { write, left: bytcnt, descriptor: self.ram.read(0x88) });
+            self.tcbcnt = 0;
+            self.tbbcnt = 0;
+            return;
         }
         if write {
             if self.blksiz == 0 {
@@ -347,7 +372,64 @@ impl SdMmcHost {
         u32::from_le_bytes(b)
     }
 
-    pub fn irq(&self) -> bool { self.ctrl & (1 << 4) != 0 && self.rintsts & self.intmask != 0 }
+    pub fn dma_pending(&self) -> bool {
+        self.dma.is_some() && self.clock_enabled && !self.held_in_reset &&
+            self.ctrl & (1 << 25) != 0 && self.ram.read(0x80) & (1 << 7) != 0
+    }
+
+    fn dma_error(&mut self, fatal: bool) {
+        self.ram.write(0x8c, self.ram.read(0x8c) | (1 << 9) | if fatal { 1 << 2 } else { 1 << 4 });
+        if fatal { self.dma = None; self.rintsts |= INT_DRTO; }
+    }
+
+    /// Bound each descriptor turn. Exhaustion without completion is an error,
+    /// never DTO; an unavailable descriptor remains pending for PLDMND refill.
+    pub fn dma_step(&mut self, memory: &mut impl SdDmaMemory) {
+        for _ in 0..64 {
+            let Some(x) = &self.dma else { return };
+            let (descriptor, remaining, write) = (x.descriptor, x.left, x.write);
+            if descriptor == 0 || descriptor & 3 != 0 { self.dma_error(true); return; }
+            let Some(control) = memory.word(descriptor) else { self.dma_error(true); return };
+            if control & (1 << 31) == 0 { self.dma_error(false); return; }
+            let Some(sizes) = memory.word(descriptor + 4) else { self.dma_error(true); return };
+            let Some(buffer) = memory.word(descriptor + 8) else { self.dma_error(true); return };
+            let Some(next) = memory.word(descriptor + 12) else { self.dma_error(true); return };
+            let count = (sizes & 0x1fff).min(remaining) as usize;
+            if count == 0 || control & (1 << 4) == 0 || !memory.valid_data(buffer, count) {
+                self.dma_error(true); return;
+            }
+            if write {
+                let Some(bytes) = memory.read_data(buffer, count) else { self.dma_error(true); return };
+                let Some(card) = self.card.as_mut() else { self.dma_error(true); return };
+                if card.stream_left() < count as u32 { self.dma_error(true); return; }
+                card.write_chunk(&bytes);
+            } else {
+                let Some(card) = self.card.as_mut() else { self.dma_error(true); return };
+                let bytes = card.read_chunk(count);
+                if bytes.len() != count || !memory.write_data(buffer, &bytes) { self.dma_error(true); return; }
+            }
+            if !memory.write_word(descriptor, control & !(1 << 31)) { self.dma_error(true); return; }
+            self.ram.write(0x94, descriptor);
+            self.tcbcnt += count as u32;
+            self.tbbcnt += count as u32;
+            let left = remaining - count as u32;
+            let last = control & (1 << 2) != 0;
+            self.ram.write(0x8c, self.ram.read(0x8c) | (1 << 8) | if write { 1 } else { 2 });
+            if left == 0 {
+                self.dma = None;
+                self.rintsts |= INT_DTO;
+                return;
+            }
+            if last || next == 0 { self.dma_error(true); return; }
+            self.dma = Some(DmaXfer { write, left, descriptor: next });
+        }
+        self.dma_error(true);
+    }
+
+    pub fn irq(&self) -> bool {
+        self.ctrl & (1 << 4) != 0 &&
+            (self.rintsts & self.intmask != 0 || self.ram.read(0x8c) & self.ram.read(0x90) != 0)
+    }
 }
 
 impl Default for SdMmcHost { fn default() -> Self { Self::new() } }
@@ -641,7 +723,7 @@ mod tests {
         let mut x4 = X4::new(Some(X4::patterned(128 * 512)));
         x4.reset();
         x4.write(0x800, 1 | (3 << 9) | (7 << 13) | (7 << 17) | (1 << 23));
-        x4.write(0x2c, (1 << 21) | (1 << 13) | (1 << 16) | (1 << 29) | (1 << 31)); // update cmd
+        x4.write(0x2c, (1 << 16) | (1 << 29) | (1 << 31)); // CMD0, not a clock update
         let raw = x4.read(0x44);
         assert_ne!(raw & INT_CMD_DONE, 0);
         x4.write(0x44, 0);                                             // writing 0 clears nothing (W1C)
@@ -652,7 +734,7 @@ mod tests {
         x4.write(0x24, u32::MAX);
         let ctrl = x4.read(0) | (1 << 4);
         x4.write(0, ctrl);
-        x4.write(0x2c, (1 << 21) | (1 << 13) | (1 << 16) | (1 << 29) | (1 << 31)); // another update cmd
+        x4.write(0x2c, (1 << 16) | (1 << 29) | (1 << 31)); // CMD0 again
         assert_ne!(x4.read(0x40) & INT_CMD_DONE, 0, "mintsts mirrors the masked raw status");
         assert_eq!(x4.host.irq_sources(), 1);
         x4.write(0x24, 0);
@@ -693,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn dma_data_path_never_completes() {
+    fn dma_data_path_requires_enabled_idmac() {
         let mut x4 = X4::new(Some(X4::patterned(128 * 512)));
         assert_eq!(x4.initialize(), 128);
         x4.start_block(0);
@@ -710,7 +792,7 @@ mod tests {
             if x4.read(0x44) & INT_DTO != 0 && words == 128 { break; }
         }
         assert_ne!(words, 128, "no bus master here: the data phase honestly never delivers");
-        assert_eq!(x4.read(0x30), 4 << 9, "the command phase completed normally; only the data phase hangs");
+        assert_eq!(x4.read(0x30), (4 << 9) | (1 << 8), "command completed; READY_FOR_DATA is explicit");
     }
 
     #[test]

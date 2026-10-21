@@ -44,7 +44,8 @@ pub const R1_ADDRESS_ERROR: u32 = 1 << 30;
 pub const R1_BLOCK_LEN_ERROR: u32 = 1 << 29;
 pub const R1_WP_VIOLATION: u32 = 1 << 26;
 pub const R1_ILLEGAL_COMMAND: u32 = 1 << 22;
-pub const R1_APP_CMD: u32 = 1 << 7;
+// IDF v6.1 components/sdmmc/include/sd_protocol_defs.h MMC_R1_APP_CMD.
+pub const R1_APP_CMD: u32 = 1 << 5;
 
 /// One SD card backed by an in-memory image. Attach one to an `SdMmcHost` (slot 1, the X4's slot).
 /// Any image length is accepted: an empty image presents the smallest representable (4-sector)
@@ -69,6 +70,7 @@ pub struct SdCard {
     /// read/write stream cursor for data phases (byte offset into `image`)
     stream: u32,
     stream_left: u32,
+    register_data: Vec<u8>,
     /// bytes written since attach (the host's save-back hint for a disposable fixture)
     dirty_bytes: u32,
 }
@@ -86,7 +88,7 @@ impl SdCard {
             csd: build_csd(capacity_blocks, high_capacity),
             cid: build_cid(),
             rca: 0, state: State::Idle, app_next: false, init_pending: true,
-            powered: true, write_protected: false, stream: 0, stream_left: 0, dirty_bytes: 0,
+            powered: true, write_protected: false, stream: 0, stream_left: 0, register_data: Vec::new(), dirty_bytes: 0,
         }
     }
 
@@ -125,7 +127,7 @@ impl SdCard {
             csd: build_csd(capacity_blocks, high_capacity),
             cid: build_cid(),
             rca: 0, state: State::Idle, app_next: false, init_pending: true,
-            powered: true, write_protected: false, stream: 0, stream_left: 0, dirty_bytes: 0,
+            powered: true, write_protected: false, stream: 0, stream_left: 0, register_data: Vec::new(), dirty_bytes: 0,
         }
     }
 
@@ -136,8 +138,23 @@ impl SdCard {
             return CardReply::silence();
         }
         let app = core::mem::take(&mut self.app_next);
-        let r1 = |state: State, extra: u32| [extra | (state.bits() << 9), 0, 0, 0];
+        let r1 = |state: State, extra: u32| [extra | (state.bits() << 9) |
+            if matches!(state, State::Tran | State::Stby) { 1 << 8 } else { 0 }, 0, 0, 0];
         match (index, app) {
+            // A memory-only SD card does not answer the SDIO CMD5 probe.
+            (5, _) => CardReply::silence(),
+            // SD Physical Layer SCR (ACMD51): SD v1.0, 1-bit support. This
+            // truthfully declines high-speed/4-bit modes outside this proof.
+            (51, true) if self.state == State::Tran => {
+                self.register_data = vec![0, 1, 0, 0, 0, 0, 0, 0];
+                self.stream_left = 8;
+                CardReply { response: Some(r1(self.state, 0)), read_bytes: Some(8), accept_write: false }
+            }
+            (13, true) if self.state == State::Tran => {
+                self.register_data = vec![0; 64];
+                self.stream_left = 64;
+                CardReply { response: Some(r1(self.state, 0)), read_bytes: Some(64), accept_write: false }
+            }
             // CMD0 GO_IDLE_STATE: no response, always accepted.
             (0, _) => { self.state = State::Idle; self.init_pending = true; CardReply::silence() }
             // CMD1 is MMC-only; an SD card flags it illegal.
@@ -161,7 +178,7 @@ impl SdCard {
             }
             (41, _) => CardReply::response(r1(self.state, R1_ILLEGAL_COMMAND)),
             // CMD2 ALL_SEND_CID (R2).
-            (2, _) if self.state == State::Ready => { self.state = State::Ident; self.r2(false) }
+            (2, _) if self.state == State::Ready => { self.state = State::Ident; self.r2(true) }
             // CMD3 SET_RELATIVE_ADDR: the card publishes a fixed synthetic RCA.
             (3, _) if self.state == State::Ident => {
                 self.rca = 1;
@@ -250,6 +267,11 @@ impl SdCard {
     /// Pull the next read-stream bytes (the controller asks for what still fits its FIFO).
     pub fn read_chunk(&mut self, len: usize) -> Vec<u8> {
         let take = (len as u32).min(self.stream_left) as usize;
+        if !self.register_data.is_empty() {
+            let take = take.min(self.register_data.len());
+            self.stream_left -= take as u32;
+            return self.register_data.drain(..take).collect();
+        }
         let at = self.stream as usize;
         let out = self.image.get(at..at + take).map(<[u8]>::to_vec).unwrap_or_default();
         self.stream += take as u32;

@@ -95,6 +95,9 @@ impl GpioState {
 }
 
 pub trait SocBus: Bus {
+    /// Optional attached SD image for a front end to preserve after an explicit
+    /// run. Models never perform host filesystem I/O themselves.
+    fn sd_image_bytes(&self) -> Option<&[u8]> { None }
     fn enable_ble(&mut self, _elf: &crate::elf::Elf) -> Result<(), String> { Err("BLE is unsupported on this chip".into()) }
     fn enable_ble_full(&mut self, _observe: bool) -> Result<(), String> { Err("full BLE requires C3".into()) }
     fn ble_enabled(&self) -> bool { false }

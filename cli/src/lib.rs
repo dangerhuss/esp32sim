@@ -72,6 +72,7 @@ pub struct Opts {
     pub mac: Option<[u8; 6]>, pub strap: Option<u32>, pub reset_cause: Option<u32>, pub efuse_regs: Option<String>, pub regs_init: Option<String>,
     pub board: String, pub wifi: Option<String>, pub ble: bool, pub ble_full: bool, pub ble_observe: bool, pub ble_scan: bool, pub net: String, pub cam_image: Option<String>, pub cam_stream: Option<String>, pub cam_size: Option<String>, pub cam_fps: f64,
     pub spi2_timing: bool, pub measured_te: bool,
+    pub sd_image: Option<String>, pub sd_save: Option<String>,
     pub max_insns: u64, pub max_seconds: Option<f64>, pub script: Option<String>, pub serial: Option<String>,
     pub console: Option<String>, pub console_prefix: bool, pub realtime: bool, pub web_port: Option<u16>, pub web_dir: Option<String>, pub no_reboot: bool,
     pub i2s_tone: Vec<String>,
@@ -106,6 +107,8 @@ pub fn parse(args: &[String], default_chip: &str) -> Opts {
             "--boot" => o.boot = Some(next()),
             "--flash-mb" => o.flash_mb = Some(next().parse().expect("mb")),
             "--psram-mb" => o.psram_mb = Some(next().parse().expect("mb")),
+            "--sd-image" => o.sd_image = Some(next()),
+            "--sd-save" => o.sd_save = Some(next()),
             "--mac" => { let v = next(); let b: Vec<u8> = v.split(':').filter_map(|x| u8::from_str_radix(x, 16).ok()).collect(); if b.len() != 6 { eprintln!("--mac wants xx:xx:xx:xx:xx:xx"); std::process::exit(2); } let mut m = [0u8; 6]; m.copy_from_slice(&b); o.mac = Some(m); }
             "--strap" => o.strap = Some(hex(&next(), "strap")),
             "--reset-cause" => o.reset_cause = Some(hex(&next(), "reset-cause")),
@@ -174,6 +177,11 @@ pub fn parse(args: &[String], default_chip: &str) -> Opts {
         }
         i += 1;
     }
+    if (o.sd_image.is_some() || o.sd_save.is_some()) && !matches!(o.chip.as_str(), "s3" | "esp32s3") {
+        usage_error("SDMMC image attachment currently requires ESP32-S3");
+    }
+    if o.sd_save.is_some() && o.sd_image.is_none() { usage_error("--sd-save requires --sd-image"); }
+    if let Some(path) = &o.sd_save { if std::path::Path::new(path).exists() { usage_error("--sd-save requires a fresh output path"); } }
     if (o.ble_observe || o.ble_scan) && !o.ble_full { usage_error("BLE central/observer use requires --ble full"); }
     if o.ble_full && o.ble { usage_error("--ble full and --ble are mutually exclusive"); }
     if o.ble_full && !matches!(o.chip.as_str(), "c3" | "esp32c3") { usage_error("--ble full requires C3"); }
@@ -273,6 +281,14 @@ fn setup_s3(o: &Opts) -> esp32s3::Machine {
     m.bus.periph.lcd_cam.frame_cycles = (esp32s3::periph::CPU_HZ as f64 / o.cam_fps) as u64;
     if let Some(mb) = o.flash_mb { if mb != 8 { m.bus.set_flash_size(mb << 20); } }
     if let Some(mb) = o.psram_mb { if mb != 2 { m.bus.set_psram_size(mb << 20).unwrap(); } }
+    if let Some(path) = &o.sd_image {
+        let metadata = std::fs::metadata(path).unwrap_or_else(|e| usage_error(&format!("SD image: {e}")));
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 2 << 30 {
+            usage_error("SD image must be a nonempty regular file no larger than 2 GiB; physical devices are refused");
+        }
+        let image = std::fs::read(path).unwrap_or_else(|e| usage_error(&format!("SD image: {e}")));
+        m.bus.periph.sdmmc.attach_card(image);
+    }
     if let Some(p) = &o.efuse_regs {
         let txt = std::fs::read_to_string(p).expect("efuse file");
         let mut n = 0;
@@ -552,6 +568,16 @@ fn report<S: Soc>(m: &mut Machine<S>, o: &Opts, stop: Stop, dt: f64) {
       if m.vq_stats[0] > 0 { eprintln!("[emu] virtual quanta: runs, quanta, stopped at a device register, at waiti = {:?}", m.vq_stats); }
       if st.iter().any(|s| s.0 > 0) { let b0 = st[0]; let b1 = st.get(1).copied().unwrap_or((0, 0, 0, 0)); eprintln!("[emu] blocks: {} built ({} cache flushes) core0, {} ({}) core1; jit: {} compiled, {} KB code", b0.0, b0.1, b1.0, b1.1, b0.2 + b1.2, (b0.3 + b1.3) / 1024); } }
     if m.stub_hits > 0 { eprintln!("[emu] stubs hit {} times", m.stub_hits); }
+    if let Some(path) = &o.sd_save {
+        use esp_soc::SocBus as _;
+        let bytes = m.bus.sd_image_bytes().unwrap_or_else(|| usage_error("no SD image to save"));
+        let result = std::fs::OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut file| {
+            std::io::Write::write_all(&mut file, bytes)?;
+            file.sync_all()
+        });
+        if let Err(e) = result { eprintln!("[emu] SD save failed: {e}"); std::process::exit(1); }
+        eprintln!("[emu] saved {} SD bytes", bytes.len());
+    }
     if let Some(p) = &o.tft_png { match m.write_tft_png(p, 3) { Ok(()) => eprintln!("[emu] wrote {}", p), Err(e) => eprintln!("[emu] png: {}", e) } }
     if let Some(p) = &o.gram_png { match m.write_gram_png(p) { Ok(()) => eprintln!("[emu] wrote {}", p), Err(e) => eprintln!("[emu] png: {}", e) } }
     if o.dump { eprintln!("{}", m.dump_regs()); }
