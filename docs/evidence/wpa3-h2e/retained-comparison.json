@@ -1,0 +1,201 @@
+{
+  "schema": "ex234-retained-comparison-v1",
+  "firmware": {
+    "repository": "https://github.com/dangerhuss/crusty",
+    "commit": "eeef3579f4454d9e58e25db597c458e56d64dfa2",
+    "source_sha256": "5cfdad4d557563f8ce024fd276c62a8b85f273c249c5b9545c018dc4ee070efe",
+    "app_sha256": "d63344850b1daca659faf401aa8674f203cf53120f5ac64be7e7836f1c73af6d",
+    "target": "esp32c3",
+    "guest_firmware_modified_for_emulation": false
+  },
+  "emulator": {
+    "parent_commit": "9e426ccffb41c6ed3bdaa27d93e59ead45b798f5",
+    "final_module_source_commit": "d157bd31c3a25f11ec65b0b28018271222517a16",
+    "final_module_sha256": "da125850734b300534623ecd4a9ce15de54ff2536784ec1b3803e90dc45347f4",
+    "initial_success_module_sha256": "c85c96825cbe9b5c1436777afd09d1c0afb84697a27c2376834aa9123714faa9",
+    "guest_hz": 160000000,
+    "run_slice_cycles": 160000,
+    "radio_backend": "bounded Ethernet stdio relay; guest owns end-to-end TLS",
+    "rng": "real host entropy FIFO",
+    "artificial_foreground_pause": false,
+    "artificial_background_block": false,
+    "jit_requested": true,
+    "host_jit_compile": "returns zero; no host-generated JIT blocks"
+  },
+  "budget": {
+    "heartbeat_period_us": 100000,
+    "maximum_gap_us": 150000,
+    "maximum_lateness_us": 50000
+  },
+  "runs": [
+    {
+      "label": "physical_x3_wpa3",
+      "retained_measurement_complete": true,
+      "retained_packets": 84,
+      "runtime_foreground_budget_passed": false,
+      "actual_guest_or_device_cf_upload": true,
+      "host_uploaded_runtime_packets": false,
+      "association": {
+        "begin_us": 311698,
+        "end_us": 2664784,
+        "foreground_count": 24,
+        "maximum_gap_us": 262845,
+        "maximum_lateness_us": 192837,
+        "maximum_tick_gap_us": 1044,
+        "auth_mode": 6
+      },
+      "workload": {
+        "foreground_count": 101,
+        "maximum_gap_us": 100016,
+        "maximum_lateness_us": 0
+      },
+      "logical_jobs": 5,
+      "seed": 42,
+      "completion_order": [
+        5,
+        4,
+        2,
+        3,
+        1
+      ],
+      "job_verification": "All per-job identity, cost, queue/execution interval, result checksum, completion and final work-buffer conservation assertions passed before the aggregate foreground budget check",
+      "prom_verification_sha256": "984e08e0e64542ba281dce2828231abed8c8561a08ec85942182989a582c66e1",
+      "retained_query_capture_sha256": "67b9c493cede18e325157b46853e778e75c95016252b2d5fdde587038d204890"
+    },
+    {
+      "label": "wasm_wpa3_initial_success",
+      "retained_measurement_complete": true,
+      "retained_packets": 84,
+      "runtime_foreground_budget_passed": false,
+      "actual_guest_or_device_cf_upload": true,
+      "host_uploaded_runtime_packets": false,
+      "association": {
+        "begin_us": 178547,
+        "end_us": 2214982,
+        "foreground_count": 20,
+        "maximum_gap_us": 233085,
+        "maximum_lateness_us": 132476,
+        "maximum_tick_gap_us": 1001,
+        "auth_mode": 6
+      },
+      "workload": {
+        "foreground_count": 100,
+        "maximum_gap_us": 100001,
+        "maximum_lateness_us": 0
+      },
+      "logical_jobs": 5,
+      "seed": 42,
+      "completion_order": [
+        5,
+        4,
+        2,
+        3,
+        1
+      ],
+      "job_verification": "All per-job identity, cost, queue/execution interval, result checksum, completion and final work-buffer conservation assertions passed before the aggregate foreground budget check",
+      "prom_verification_sha256": "9de4885699c7dc082d0420b95f47f50b7956ab996c880c145b014e7f8e721d6b",
+      "retained_query_capture_sha256": "15940775ea5d4f04dbf341e462a3962b58e675186dcc6adea4af55b6bf6ad304"
+    },
+    {
+      "label": "wasm_wpa3_final",
+      "retained_measurement_complete": true,
+      "retained_packets": 84,
+      "runtime_foreground_budget_passed": false,
+      "actual_guest_or_device_cf_upload": true,
+      "host_uploaded_runtime_packets": false,
+      "association": {
+        "begin_us": 178547,
+        "end_us": 2214980,
+        "foreground_count": 20,
+        "maximum_gap_us": 233598,
+        "maximum_lateness_us": 132989,
+        "maximum_tick_gap_us": 1001,
+        "auth_mode": 6
+      },
+      "workload": {
+        "foreground_count": 100,
+        "maximum_gap_us": 100001,
+        "maximum_lateness_us": 0
+      },
+      "logical_jobs": 5,
+      "seed": 42,
+      "completion_order": [
+        5,
+        4,
+        2,
+        3,
+        1
+      ],
+      "job_verification": "All per-job identity, cost, queue/execution interval, result checksum, completion and final work-buffer conservation assertions passed before the aggregate foreground budget check",
+      "prom_verification_sha256": "889edb44a9aba24dea048736740d13a54b5ba0f0456b7e8e9424b43367075d1c",
+      "retained_query_capture_sha256": "d8ff128d968708c44feb4beaf15c1442549d8f023d8f9c1ab420739c8d5e6f04"
+    },
+    {
+      "label": "wasm_wpa2_final_control",
+      "retained_measurement_complete": true,
+      "retained_packets": 84,
+      "runtime_foreground_budget_passed": true,
+      "actual_guest_or_device_cf_upload": true,
+      "host_uploaded_runtime_packets": false,
+      "association": {
+        "begin_us": 178547,
+        "end_us": 1851980,
+        "foreground_count": 16,
+        "maximum_gap_us": 100000,
+        "maximum_lateness_us": 0,
+        "maximum_tick_gap_us": 1001,
+        "auth_mode": 3
+      },
+      "workload": {
+        "foreground_count": 100,
+        "maximum_gap_us": 100000,
+        "maximum_lateness_us": 0
+      },
+      "logical_jobs": 5,
+      "seed": 42,
+      "completion_order": [
+        5,
+        4,
+        2,
+        3,
+        1
+      ],
+      "job_verification": "All per-job identity, cost, queue/execution interval, result checksum, completion and final work-buffer conservation assertions passed before the aggregate foreground budget check",
+      "prom_verification_sha256": "fa614445575ae1588176309497b3b87a85fa2b6d5678538567fbe74fedf7c669",
+      "retained_query_capture_sha256": "3e63b9e77f09ecb34724f7f2d98c8127393b451159ff5204fb9836f5efbfd4fa"
+    }
+  ],
+  "negative_result": {
+    "module_sha256": "f682ee793a02f6711664965242ebce37512c844fc89f33475abfe5bf013f2c3f",
+    "source_patch_sha256": "3854426ae6d5c6cce63889de84358b8c320be18c83bf67e616e5e0c5f603b1be",
+    "outcome": "Real SDK SAE Commit rejected before FCS DMA boundary was corrected; no foreground conclusion taken from failed association"
+  },
+  "checks": {
+    "native_clippy_warnings_denied": "passed",
+    "wasm_clippy_warnings_denied": "passed",
+    "native_suite": {
+      "passed": 1049,
+      "failed": 0,
+      "ignored": 0,
+      "external_filtered": 22
+    },
+    "wasm_smoke_scenarios": [
+      "hello",
+      "c3-hello",
+      "c6-hello",
+      "c6-energy-scan",
+      "c6-contiki",
+      "c6-contiki-net",
+      "c6-rpl-net",
+      "panel"
+    ]
+  },
+  "limits": [
+    "Simulator final association maximum gap is 11.13 percent lower than the single physical observation; not a calibrated timing match",
+    "WPA2 control was run in WASM; the physical AP was not reconfigured",
+    "SDK task or exact crypto function causing physical stall has not been proven",
+    "Hardware foreground failure remains open; no performance fix or hardware restoration was performed",
+    "PMF teardown, SA Query, rekey, reassociation, RF and other chip adapters are unqualified",
+    "Private profiles, full flash/card state, raw labels, boot identities and remote endpoints are retained outside Git; software hashes and numeric measurements are curated here"
+  ]
+}
