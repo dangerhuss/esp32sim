@@ -146,7 +146,8 @@ through the [host ADC API](peripherals.md#host-adc-inputs), with no CLI equivale
 ### TCP path outages
 
 `tcp offline` closes the virtual NAT's existing TCP sockets and refuses new TCP
-traffic with valid resets. `tcp online` restores forwarding for fresh connections.
+traffic with valid resets. `tcp online` clears the fault for fresh connections. Host connectivity still
+requires `--net nat`; these commands never enable NAT.
 This explicit host fault leaves the AP, DHCP, DNS/resolver and SNTP state intact;
 it models an upstream TCP-path outage, not physical RF loss or an HTTP status.
 An unattached virtual network or Ethernet relay mode is unsupported and stops the
