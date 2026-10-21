@@ -95,6 +95,9 @@ impl GpioState {
 }
 
 pub trait SocBus: Bus {
+    /// Replace only RNG-register words with frontend-supplied entropy. No
+    /// filesystem I/O in the model; offline deterministic behavior stays default.
+    fn set_rng_source(&mut self, _source: esp_periph::rng::RngSource) -> Result<(), String> { Err("this chip has no entropy input".into()) }
     /// Optional attached SD image for a front end to preserve after an explicit
     /// run. Models never perform host filesystem I/O themselves.
     fn sd_image_bytes(&self) -> Option<&[u8]> { None }

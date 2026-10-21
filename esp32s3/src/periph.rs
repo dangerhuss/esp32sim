@@ -317,12 +317,13 @@ impl Extmem {
 }
 
 // ------------------------------------------------------------------ WDEV (radio) block: only the hardware RNG register matters to us
-pub struct Wdev { state: u64, ram: RegRam }
+pub struct Wdev { state: u64, ram: RegRam, pub entropy: Option<esp_periph::rng::RngSource> }
 impl Default for Wdev { fn default() -> Self { Self::new() } }
 
 impl Wdev {
-    pub fn new() -> Self { Wdev { state: 0x9E37_79B9_7F4A_7C15, ram: RegRam::new() } }
+    pub fn new() -> Self { Wdev { state: 0x9E37_79B9_7F4A_7C15, ram: RegRam::new(), entropy: None } }
     pub fn read(&mut self, off: u32) -> u32 {
+        if off == 0x7c { if let Some(source) = &mut self.entropy { return source(); } }
         match off {
             0x7c => { let mut x = self.state; x ^= x << 13; x ^= x >> 7; x ^= x << 17; self.state = x; (x >> 16) as u32 }   // WDEV_RND_REG (xorshift64)
             _ => self.ram.read(off),

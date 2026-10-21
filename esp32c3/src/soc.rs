@@ -32,6 +32,7 @@ impl Soc for C3 {
 }
 
 impl esp_soc::SocBus for SocBus {
+    fn set_rng_source(&mut self, source: esp_periph::rng::RngSource) -> Result<(), String> { self.periph.rng.entropy = Some(source); Ok(()) }
     fn enable_ble(&mut self, elf: &esp_soc::elf::Elf) -> Result<(), String> {
         if self.periph.ble_lc.enabled() { return Err("HCI BLE and full BLE are mutually exclusive".into()) }
         self.ble.enable(&elf.by_name, elf.symbol_sizes.get("esp_bt_controller_init").copied().unwrap_or(0), &<Self as esp_soc::ble::vhci::VhciBus>::abi()) }
@@ -126,6 +127,7 @@ impl esp_soc::SocBus for SocBus {
         self.ble.reset();
         let cause = self.periph.rtc.reset_cause;
         let mut old = std::mem::replace(&mut self.periph, periph::Peripherals::new(mac));
+        self.periph.rng.entropy = old.rng.entropy.take(); // Host entropy survives a guest reset.
         let p = &mut self.periph;
         p.wifi.link = old.wifi.link.surviving_reboot();
         if old.ble_lc.enabled() {

@@ -35,6 +35,7 @@ impl Soc for C6 {
 }
 
 impl esp_soc::SocBus for SocBus {
+    fn set_rng_source(&mut self, source: esp_periph::rng::RngSource) -> Result<(), String> { self.periph.rng.entropy = Some(source); Ok(()) }
     fn enable_ble(&mut self, elf: &esp_soc::elf::Elf) -> Result<(), String> { self.ble.enable(&elf.by_name, elf.symbol_sizes.get("esp_bt_controller_init").copied().unwrap_or(0), elf.idf_version().unwrap_or("")) }
     fn ble_enabled(&self) -> bool { !self.ble.hooks.is_empty() }
     fn ble_pending_commands(&self) -> usize { self.ble.session.pending_commands() }
@@ -110,6 +111,7 @@ impl esp_soc::SocBus for SocBus {
         self.ble.reset();
         let cause = self.periph.lpsys.reset_cause;
         let mut old = std::mem::replace(&mut self.periph, periph::Peripherals::new(mac));
+        self.periph.rng.entropy = old.rng.entropy.take(); // Host entropy survives a guest reset.
         let p = &mut self.periph;
         p.efuse = old.efuse;
         p.optional.i2s0.keep_rx_input(&mut old.optional.i2s0);

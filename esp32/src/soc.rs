@@ -60,6 +60,7 @@ impl Soc for Esp32 {
 }
 
 impl esp_soc::SocBus for SocBus {
+    fn set_rng_source(&mut self, source: esp_periph::rng::RngSource) -> Result<(), String> { self.rng.entropy = Some(source); Ok(()) }
     fn enable_ble(&mut self, elf: &esp_soc::elf::Elf) -> Result<(), String> {
         self.ble.enable(&elf.by_name, elf.symbol_sizes.get("esp_bt_controller_init").copied().unwrap_or(0), &<Self as esp_soc::ble::vhci::VhciBus>::abi())
     }
