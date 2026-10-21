@@ -116,6 +116,32 @@ mod tests {
         assert_eq!(b.periph.spi2.read(0) & (1 << 24), 0);
     }
     #[test]
+    fn waits_for_both_dma_directions_without_clocking_partial_work() {
+        let (mut b, calls) = setup();
+        b.periph.gdma.state.out[0].running = false;
+        b.periph.gdma.state.inp[0].running = false;
+        b.write32(0x6002_4000, 1 << 24).unwrap();
+        assert_eq!(*calls.lock().unwrap(), 0);
+        b.write32(0x6003_f0e0, (1 << 21) | (DRAM_LOW & 0xfffff)).unwrap();
+        assert_eq!(*calls.lock().unwrap(), 0);
+        b.write32(0x6003_f080, (1 << 22) | ((DRAM_LOW + 12) & 0xfffff)).unwrap();
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(b.read32(DRAM_LOW + 0x200).unwrap(), 0x4433_2211);
+    }
+    #[test]
+    fn split_receive_returns_only_the_final_eof() {
+        let (mut b, calls) = setup();
+        for (a, v) in [(DRAM_LOW, 0xc000_8008), (DRAM_LOW + 20, DRAM_LOW + 24),
+            (DRAM_LOW + 24, 0x8000_0004), (DRAM_LOW + 28, DRAM_LOW + 0x204),
+            (DRAM_LOW + 32, 0), (DRAM_LOW + 0x104, 0x8877_6655)] { b.write32(a, v).unwrap(); }
+        b.write32(0x6002_401c, 63).unwrap(); b.write32(0x6002_4000, 1 << 24).unwrap();
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(b.read32(DRAM_LOW + 12).unwrap(), 0x0000_4004);
+        assert_eq!(b.read32(DRAM_LOW + 24).unwrap(), 0x4000_4004);
+        assert_eq!(b.read32(DRAM_LOW + 0x204).unwrap(), 0x8877_6655);
+        assert_eq!(b.periph.gdma.state.inp[0].eof_desc, DRAM_LOW + 24);
+    }
+    #[test]
     fn invalid_tx_never_clocks_the_card_or_reports_successful_eof() {
         for (control, address) in [(0x4000_4004, DRAM_LOW + 0x100), (0xc000_4004, 0x6000_4000), (0xc000_2002, DRAM_LOW + 0x100)] {
             let (mut b, calls) = setup(); b.write32(DRAM_LOW, control).unwrap(); b.write32(DRAM_LOW + 4, address).unwrap();
