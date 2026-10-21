@@ -1,0 +1,172 @@
+{
+  "model_code_commit": "ad95609363d536942374c14f5e6cb3c81cb4e200",
+  "base": "57df8eae0952d110bb38eb85331b2e3642e6fc03",
+  "guest_repo": "https://github.com/dangerhuss/crusty",
+  "guest_commit": "68a4cdfc19b2364469461cd5f4b7f68c178894f5",
+  "model_sha256": "007bbd0e7aaa965d7e296d0ca6fefd66b5629ee4a4f5549fbf62dfac4e3795de",
+  "results": {
+    "c3": {
+      "passed": true,
+      "source_sha256": "97ef423bcf0a168e9ef146f27e37a7b44f795ab99b90df14072a019b59b2e210",
+      "artifacts": {
+        "crusty_scheduler_poc.bin": "83e2aa797b9b16756c27c720755632becd7eee651a4d4b3114bc79f6e2bb01e4",
+        "crusty_scheduler_poc.elf": "6c5732e1ce68ae866abc83648b69976da4b31496f6f4cd24b073f972d0e67005",
+        "bootloader/bootloader.bin": "11430bad465de89ac1cc81ffc3fad5a986439663cfd989e44e846a0ac1e4bbf5",
+        "partition_table/partition-table.bin": "5295e8c42d6fb5f95e4e8a185932c6191d27cfc5078322475347e40e71af815a",
+        "sdkconfig": "7561f22b42f0107bb97f952a3beaa143a65ff9da36d40d16a9b163a4b97d4851"
+      },
+      "sdk_revision": "fff9895c82d744c7237be8847347bdd1b07c6643",
+      "compiler_version": "15.2.0",
+      "card_sha256": "ada9c47e002831c917b85df4beb020fd0d2365c1fac9f5a43946afeebd7479a6",
+      "payload_sha256": "ba6d132c0240202135463b11af17ce914f3c39e8675e885c5faef108c0a41a56",
+      "boots": [
+        {
+          "target": "esp32c3",
+          "core": 0,
+          "foreground_maximum_gap_us": 100001,
+          "foreground_maximum_lateness_us": 0,
+          "background_elapsed_us": 1390172,
+          "background_steps": 1048576,
+          "background_checksum": 2885017029,
+          "storage": {
+            "verified": true,
+            "created": true,
+            "sdk_error": 0,
+            "buffer_bytes": 4096,
+            "buffer_internal_dma": true,
+            "mount_elapsed_us": 60944,
+            "sync_elapsed_us": 1120,
+            "bulk_buffer_bytes": 32768,
+            "bulk_buffer_external": false,
+            "bulk_buffer_internal": true,
+            "bulk_pool_before_bytes": 216200,
+            "bulk_pool_allocated_bytes": 179328,
+            "bulk_pool_released_bytes": 215912,
+            "bulk_pool_before_release_bytes": 179040,
+            "allocation_elapsed_us": 9
+          }
+        },
+        {
+          "target": "esp32c3",
+          "core": 0,
+          "foreground_maximum_gap_us": 100000,
+          "foreground_maximum_lateness_us": 0,
+          "background_elapsed_us": 620335,
+          "background_steps": 1048576,
+          "background_checksum": 2885017029,
+          "storage": {
+            "verified": true,
+            "created": false,
+            "sdk_error": 0,
+            "buffer_bytes": 4096,
+            "buffer_internal_dma": true,
+            "mount_elapsed_us": 60944,
+            "sync_elapsed_us": 0,
+            "bulk_buffer_bytes": 32768,
+            "bulk_buffer_external": false,
+            "bulk_buffer_internal": true,
+            "bulk_pool_before_bytes": 216200,
+            "bulk_pool_allocated_bytes": 179328,
+            "bulk_pool_released_bytes": 216104,
+            "bulk_pool_before_release_bytes": 179232,
+            "allocation_elapsed_us": 9
+          }
+        }
+      ]
+    },
+    "s3": {
+      "passed": true,
+      "source_sha256": "97ef423bcf0a168e9ef146f27e37a7b44f795ab99b90df14072a019b59b2e210",
+      "artifacts": {
+        "crusty_scheduler_poc.bin": "4833331a56ad8a82644faba24b3e3f3e565d2ff9a0ad80343b86c9600fb473d7",
+        "crusty_scheduler_poc.elf": "3856d5d8585d89b4dca9af7e6daf2efd021094952f71a2a8c8895186877327f2",
+        "bootloader/bootloader.bin": "8c779e272bfecd9866be4b2fb001b9d49dad41d67aa60b08bac1b6cd808a3a5b",
+        "partition_table/partition-table.bin": "5295e8c42d6fb5f95e4e8a185932c6191d27cfc5078322475347e40e71af815a",
+        "sdkconfig": "bc6e63e72cb081e4abdaf7e08662d78f5da662035541d48cc52cf4d16868eb13"
+      },
+      "sdk_revision": "fff9895c82d744c7237be8847347bdd1b07c6643",
+      "compiler_version": "15.2.0",
+      "card_sha256": "79215e831d82b0401cb08ce720962a7f7d0dfd996d7300762707c41298a060e1",
+      "payload_sha256": "ba6d132c0240202135463b11af17ce914f3c39e8675e885c5faef108c0a41a56",
+      "boots": [
+        {
+          "target": "esp32s3",
+          "core": 1,
+          "foreground_maximum_gap_us": 100140,
+          "foreground_maximum_lateness_us": 140,
+          "background_elapsed_us": 341628,
+          "background_steps": 1048576,
+          "background_checksum": 2885017029,
+          "storage": {
+            "verified": true,
+            "created": true,
+            "sdk_error": 0,
+            "buffer_bytes": 4096,
+            "buffer_internal_dma": true,
+            "mount_elapsed_us": 50659,
+            "sync_elapsed_us": 149,
+            "bulk_buffer_bytes": 32768,
+            "bulk_buffer_external": true,
+            "bulk_buffer_internal": false,
+            "bulk_pool_before_bytes": 8382480,
+            "bulk_pool_allocated_bytes": 8349708,
+            "bulk_pool_released_bytes": 8382480,
+            "bulk_pool_before_release_bytes": 8349708,
+            "allocation_elapsed_us": 5
+          }
+        },
+        {
+          "target": "esp32s3",
+          "core": 1,
+          "foreground_maximum_gap_us": 100140,
+          "foreground_maximum_lateness_us": 140,
+          "background_elapsed_us": 200815,
+          "background_steps": 1048576,
+          "background_checksum": 2885017029,
+          "storage": {
+            "verified": true,
+            "created": false,
+            "sdk_error": 0,
+            "buffer_bytes": 4096,
+            "buffer_internal_dma": true,
+            "mount_elapsed_us": 50659,
+            "sync_elapsed_us": 0,
+            "bulk_buffer_bytes": 32768,
+            "bulk_buffer_external": true,
+            "bulk_buffer_internal": false,
+            "bulk_pool_before_bytes": 8382480,
+            "bulk_pool_allocated_bytes": 8349708,
+            "bulk_pool_released_bytes": 8382480,
+            "bulk_pool_before_release_bytes": 8349708,
+            "allocation_elapsed_us": 5
+          }
+        }
+      ]
+    }
+  },
+  "checks": {
+    "native_clippy": "pass",
+    "wasm_clippy": "pass",
+    "release_workspace": {
+      "passed": 1034,
+      "failed": 0,
+      "ignored": 0,
+      "external_filtered": 22
+    },
+    "wasm_manifests": [
+      "hello",
+      "c3-hello",
+      "c6-hello",
+      "c6-energy-scan",
+      "c6-contiki",
+      "c6-contiki-net",
+      "c6-rpl-net",
+      "panel"
+    ]
+  },
+  "limits": [
+    "functional byte and descriptor transport",
+    "no physical card timing, cache/DMA contention, sudden power loss or browser SD attachment claim",
+    "no physical X3 or connected C3 workload/Prom qualification"
+  ]
+}
