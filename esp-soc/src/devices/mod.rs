@@ -9,3 +9,5 @@ pub mod ws2812;
 pub use dcs_panel::DcsPanel;
 pub use spi_bitbang::SpiBitBang;
 pub use ws2812::Ws2812Chain;
+
+pub mod x3_sd;

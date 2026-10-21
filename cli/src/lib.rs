@@ -193,8 +193,8 @@ pub fn parse(args: &[String], default_chip: &str) -> Opts {
         }
         i += 1;
     }
-    if (o.sd_image.is_some() || o.sd_save.is_some()) && !matches!(o.chip.as_str(), "s3" | "esp32s3") {
-        usage_error("SDMMC image attachment currently requires ESP32-S3");
+    if (o.sd_image.is_some() || o.sd_save.is_some()) && !matches!(o.chip.as_str(), "s3" | "esp32s3" | "c3" | "esp32c3") {
+        usage_error("SD image attachment requires S3 SDMMC or C3 X3 SPI");
     }
     if o.sd_save.is_some() && o.sd_image.is_none() { usage_error("--sd-save requires --sd-image"); }
     if let Some(path) = &o.sd_save { if std::path::Path::new(path).exists() { usage_error("--sd-save requires a fresh output path"); } }
@@ -356,6 +356,15 @@ fn setup_c3(o: &Opts) -> esp32c3::Machine {
     }
     for (flag, on) in [("--board", o.board != "atech14" && o.board != "none"), ("--cam-image", o.cam_image.is_some()), ("--cam-stream", o.cam_stream.is_some()), ("--cam-size", o.cam_size.is_some()), ("--psram-mb", o.psram_mb.is_some()), ("--efuse-regs", o.efuse_regs.is_some()), ("--regs-init", o.regs_init.is_some()), ("--regstat", o.regstat.is_some())] {
         if on { eprintln!("{} is not available on the C3", flag); std::process::exit(2); }
+    }
+    if let Some(path) = &o.sd_image {
+        let metadata = std::fs::metadata(path).unwrap_or_else(|e| usage_error(&format!("SD image: {e}")));
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 2 << 30 {
+            usage_error("SD image must be a nonempty regular file no larger than 2 GiB; physical devices are refused");
+        }
+        let image = std::fs::read(path).unwrap_or_else(|e| usage_error(&format!("SD image: {e}")));
+        m.bus.board = Box::new(esp_soc::devices::x3_sd::X3Sd::new(image));
+        m.bus.attach_board_devices();
     }
     m
 }
