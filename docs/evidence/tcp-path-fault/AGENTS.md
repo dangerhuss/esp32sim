@@ -1,0 +1,1 @@
+This directory records source-bound TCP-path fault-model validation. Keep private firmware, connection inputs and raw captures outside Git. Numeric protocol controls and public-fixture comparisons are not physical RF or application qualification.

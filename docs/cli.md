@@ -143,6 +143,21 @@ select ADC1 and GPIO5 selects ADC2; C6 GPIO0–6 select ADC1.
 the timeout expires. Raw counts and completed-conversion observations are exposed
 through the [host ADC API](peripherals.md#host-adc-inputs), with no CLI equivalent.
 
+### TCP path outages
+
+`tcp offline` closes the virtual NAT's existing TCP sockets and refuses new TCP
+traffic with valid resets. `tcp online` restores forwarding for fresh connections.
+This explicit host fault leaves the AP, DHCP, DNS/resolver and SNTP state intact;
+it models an upstream TCP-path outage, not physical RF loss or an HTTP status.
+An unattached virtual network or Ethernet relay mode is unsupported and stops the
+script rather than silently ignoring the requested fault. Firmware is unchanged.
+
+```
+0 waituart0 20 WORKLOAD_STARTED
+0 tcp offline
+8 tcp online
+```
+
 ## Virtual BLE
 
 `--ble --elf firmware.elf` substitutes the controller lifecycle and legacy VHCI

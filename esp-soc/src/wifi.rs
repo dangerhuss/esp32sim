@@ -435,6 +435,12 @@ impl StationLink {
     pub fn net(&self) -> Option<&crate::net::VirtualNet> { self.net.as_ref() }
     pub fn net_mut(&mut self) -> Option<&mut crate::net::VirtualNet> { self.net.as_mut() }
     pub fn relay(&self) -> bool { self.relay }
+    pub fn set_tcp_outage(&mut self, offline: bool) -> Result<(), String> {
+        if self.relay { return Err("TCP fault injection is unavailable in Ethernet relay mode".into()); }
+        let net = self.net.as_mut().ok_or("TCP fault injection requires a virtual network")?;
+        net.set_tcp_outage(offline);
+        Ok(())
+    }
     /// The descriptor the last received frame went into, 0 before the first one.
     pub fn last_rx_desc(&self) -> u32 { self.last_rx_desc }
     /// Ethernet frames the station sent that the network or the relay has not taken yet.

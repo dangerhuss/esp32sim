@@ -51,6 +51,9 @@ impl esp_soc::SocBus for SocBus {
         self.periph.refresh_work();
         Ok(())
     }
+    fn set_tcp_outage(&mut self, offline: bool) -> Result<(), String> {
+        self.periph.wifi.link.set_tcp_outage(offline)
+    }
     fn set_ethernet_relay(&mut self, enabled: bool) -> Result<(), String> {
         self.periph.wifi.link.set_relay(enabled);
         self.periph.refresh_work();
