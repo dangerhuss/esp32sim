@@ -17,7 +17,7 @@
       },
       "sdk_revision": "fff9895c82d744c7237be8847347bdd1b07c6643",
       "compiler_version": "15.2.0",
-      "card_sha256": "ada9c47e002831c917b85df4beb020fd0d2365c1fac9f5a43946afeebd7479a6",
+      "card_sha256": "18242321f9d74084b82e31914a0c245b5e85f928cd104091c6b066f66379accb",
       "payload_sha256": "ba6d132c0240202135463b11af17ce914f3c39e8675e885c5faef108c0a41a56",
       "boots": [
         {
@@ -86,7 +86,7 @@
       },
       "sdk_revision": "fff9895c82d744c7237be8847347bdd1b07c6643",
       "compiler_version": "15.2.0",
-      "card_sha256": "79215e831d82b0401cb08ce720962a7f7d0dfd996d7300762707c41298a060e1",
+      "card_sha256": "f8bdbb64db402631b12b614716378a5d5d833ba192521c5ced305189df65a310",
       "payload_sha256": "ba6d132c0240202135463b11af17ce914f3c39e8675e885c5faef108c0a41a56",
       "boots": [
         {
