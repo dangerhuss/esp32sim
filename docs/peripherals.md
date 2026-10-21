@@ -85,3 +85,12 @@ peripheral clock's cycle count, which restarts on a software reboot.
 
 [EX207 validation](evidence/adc-host-2026-10-02/README.md) includes unchanged Arduino
 3.3.8 firmware on all three chips and both S3 ADC units.
+
+Native live-network runs must supply `--rng-source /dev/urandom` (Unix). The
+default cycle-mixed xorshift RNG models register progress for deterministic offline
+tests; it can repeat boot IDs and TLS randomness and is not secure entropy. The
+frontend entropy input replaces only RNG register words, survives guest reset and
+fails on input exhaustion. It does not model radio noise timing, RNG enable gates
+or a silicon entropy assessment. Browser frontends must wire an equivalent secure
+host input before claiming live-network entropy; this CLI option alone does not
+qualify browser behavior.

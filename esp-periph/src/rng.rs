@@ -12,8 +12,14 @@ use crate::device::{Device, WriteEffect};
 /// reproducible from the first read onward.
 pub const DEFAULT_SEED: u32 = 0x2545_f491;
 
+/// Frontend-owned entropy supplied at the real RNG register boundary. The
+/// deterministic fallback is for offline reproduction, never secure entropy.
+pub type RngSource = Box<dyn FnMut() -> u32>;
+
 pub struct Rng {
     state: u32,
+    /// Optional host input; it must fail rather than silently fall back on EOF.
+    pub entropy: Option<RngSource>,
     /// The chip's cycle count at the moment of the access; the mounting chip refreshes it from
     /// its clock tree in `pre_access` before every read of the block.
     pub now: u32,
@@ -23,7 +29,7 @@ impl Rng {
     /// The generator every chip starts from: [`DEFAULT_SEED`], no cycles yet.
     pub fn new() -> Self { Rng::with_seed(DEFAULT_SEED) }
     /// The same generator from another seed (zero would stay zero: xorshift's fixed point).
-    pub fn with_seed(seed: u32) -> Self { Rng { state: seed, now: 0 } }
+    pub fn with_seed(seed: u32) -> Self { Rng { state: seed, now: 0, entropy: None } }
 }
 
 impl Default for Rng {
@@ -33,6 +39,7 @@ impl Default for Rng {
 impl Device for Rng {
     /// The next xorshift32 word plus the cycle count, whatever the offset: the block is one register.
     fn read(&mut self, _off: u32) -> u32 {
+        if let Some(source) = &mut self.entropy { return source(); }
         self.state ^= self.state << 13; self.state ^= self.state >> 17; self.state ^= self.state << 5;
         self.state.wrapping_add(self.now)
     }

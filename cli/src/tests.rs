@@ -179,3 +179,45 @@ fn analog_scripts_reach_classic_adc_and_touch_registers() {
         assert_eq!(m.bus.read32(0x3ff4_8870).unwrap() >> 16, touch);
     }
 }
+
+#[test]
+fn rng_frontend_input_reaches_each_hardware_register_and_survives_reboot() {
+    fn check<S: Soc>(mut m: Machine<S>, address: u32) {
+        let mut word = 0x1234_5678u32;
+        m.bus.set_rng_source(Box::new(move || { word = word.wrapping_add(1); word })).unwrap();
+        assert_eq!(m.bus.read32(address), Ok(0x1234_5679));
+        m.bus.reboot([0; 6]);
+        assert_eq!(m.bus.read32(address), Ok(0x1234_567a));
+    }
+    // IDF 6.1-dev fff9895c82d744c7237be8847347bdd1b07c6643:
+    // s3/include/soc/wdev_reg.h WDEV_RND_REG; c3/register/soc/syscon_reg.h
+    // SYSCON_RND_DATA_REG (+0xb0); c6/register/soc/lpperi_reg.h
+    // LPPERI_RNG_DATA_REG (+8). Classic mapping unchanged from its bus tests.
+    check(esp32s3::machine([0; 6]), 0x6003_507c);
+    check(esp32c3::machine([0; 6], 4 << 20), 0x6002_60b0);
+    check(esp32c6::machine([0; 6], 4 << 20), 0x600b_2808);
+    check(esp32::machine([0; 6], 4 << 20), 0x3ff7_5144);
+}
+
+#[test]
+fn rng_input_is_explicit_and_fixture_eof_never_falls_back() {
+    let args = ["esp32sim".into(), "--rng-source".into(), "fixture".into()];
+    assert_eq!(parse(&args, "esp32s3").rng_source.as_deref(), Some("fixture"));
+    assert!(parse(&args[..1], "esp32s3").rng_source.is_none());
+    let path = std::env::temp_dir().join(format!("esp32sim-rng-{}.bin", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+    use std::io::Write;
+    file.write_all(&[0x78, 0x56, 0x34, 0x12, 0xef, 0xcd, 0xab, 0x90]).unwrap();
+    drop(file);
+    let mut source = rng_source(path.to_str().unwrap()).unwrap();
+    assert_eq!(source(), 0x1234_5678);
+    assert_eq!(source(), 0x90ab_cdef);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut source)).is_err());
+    std::fs::remove_file(path).unwrap();
+    assert!(rng_source("/definitely-missing-rng-input").is_err());
+    #[cfg(unix)] {
+        assert!(rng_source("/dev/null").is_err());
+        let mut os = rng_source("/dev/urandom").unwrap();
+        for _ in 0..8 { let _ = os(); }
+    }
+}

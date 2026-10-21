@@ -58,6 +58,7 @@ impl Soc for S3 {
 }
 
 impl esp_soc::SocBus for SocBus {
+    fn set_rng_source(&mut self, source: esp_periph::rng::RngSource) -> Result<(), String> { self.periph.wdev.entropy = Some(source); Ok(()) }
     fn sd_image_bytes(&self) -> Option<&[u8]> { self.periph.sdmmc.image() }
     fn enable_ble(&mut self, elf: &esp_soc::elf::Elf) -> Result<(), String> { self.ble.enable(&elf.by_name, elf.symbol_sizes.get("esp_bt_controller_init").copied().unwrap_or(0), &<Self as esp_soc::ble::vhci::VhciBus>::abi()) }
     fn ble_enabled(&self) -> bool { !self.ble.hooks.is_empty() }
@@ -157,6 +158,7 @@ impl esp_soc::SocBus for SocBus {
         let cause = self.periph.rtc.reset_cause;
         let mut old = std::mem::replace(&mut self.periph, periph::Peripherals::new(mac));
         let p = &mut self.periph;
+        p.wdev.entropy = old.wdev.entropy.take(); // Host entropy survives a guest reset.
         // The host AP and network survive a guest reboot; only the MAC and relay queues reset.
         p.wifi.link = old.wifi.link.surviving_reboot();
         // Host camera cadence and logging survive; guest capture state resets.

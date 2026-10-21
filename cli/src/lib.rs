@@ -18,6 +18,21 @@ fn usage(chip: &str) -> ! {
 
 fn usage_error(message: &str) -> ! { eprintln!("{message}"); std::process::exit(2) }
 
+/// Caller-selected RNG input. Only ordinary fixtures and the OS entropy device
+/// are accepted; do not open arbitrary device nodes. Never log entropy words.
+fn rng_source(path: &str) -> std::io::Result<esp_periph::rng::RngSource> {
+    use std::io::Read;
+    let mut input = std::fs::File::open(path)?;
+    if path != "/dev/urandom" && !input.metadata()?.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "expected a regular fixture or /dev/urandom"));
+    }
+    Ok(Box::new(move || {
+        let mut word = [0; 4];
+        input.read_exact(&mut word).unwrap_or_else(|e| panic!("RNG input failed; no deterministic fallback: {e}"));
+        u32::from_le_bytes(word)
+    }))
+}
+
 fn timing_cycles(value: &str, name: &str) -> Result<u32, String> {
     value.parse().map_err(|_| format!("{name}: expected a nonnegative u32 cycle count, got {value:?}"))
 }
@@ -72,7 +87,7 @@ pub struct Opts {
     pub mac: Option<[u8; 6]>, pub strap: Option<u32>, pub reset_cause: Option<u32>, pub efuse_regs: Option<String>, pub regs_init: Option<String>,
     pub board: String, pub wifi: Option<String>, pub ble: bool, pub ble_full: bool, pub ble_observe: bool, pub ble_scan: bool, pub net: String, pub cam_image: Option<String>, pub cam_stream: Option<String>, pub cam_size: Option<String>, pub cam_fps: f64,
     pub spi2_timing: bool, pub measured_te: bool,
-    pub sd_image: Option<String>, pub sd_save: Option<String>,
+    pub sd_image: Option<String>, pub sd_save: Option<String>, pub rng_source: Option<String>,
     pub max_insns: u64, pub max_seconds: Option<f64>, pub script: Option<String>, pub serial: Option<String>,
     pub console: Option<String>, pub console_prefix: bool, pub realtime: bool, pub web_port: Option<u16>, pub web_dir: Option<String>, pub no_reboot: bool,
     pub i2s_tone: Vec<String>,
@@ -109,6 +124,7 @@ pub fn parse(args: &[String], default_chip: &str) -> Opts {
             "--psram-mb" => o.psram_mb = Some(next().parse().expect("mb")),
             "--sd-image" => o.sd_image = Some(next()),
             "--sd-save" => o.sd_save = Some(next()),
+            "--rng-source" => o.rng_source = Some(next()),
             "--mac" => { let v = next(); let b: Vec<u8> = v.split(':').filter_map(|x| u8::from_str_radix(x, 16).ok()).collect(); if b.len() != 6 { eprintln!("--mac wants xx:xx:xx:xx:xx:xx"); std::process::exit(2); } let mut m = [0u8; 6]; m.copy_from_slice(&b); o.mac = Some(m); }
             "--strap" => o.strap = Some(hex(&next(), "strap")),
             "--reset-cause" => o.reset_cause = Some(hex(&next(), "reset-cause")),
@@ -444,6 +460,10 @@ fn run_with_reboots<S: Soc>(m: &mut Machine<S>, mut remaining: u64, reboot: bool
 
 /// Images, boot, observers, scripts: everything before the first instruction. Returns the boot mode.
 fn prepare<S: Soc>(m: &mut Machine<S>, o: &Opts) -> String {
+    if let Some(path) = &o.rng_source {
+        let source = rng_source(path).unwrap_or_else(|e| usage_error(&format!("--rng-source: {e}")));
+        m.bus.set_rng_source(source).unwrap_or_else(|e| usage_error(&e));
+    }
     let c3 = S::CORES == 1;
     let boot = o.boot.clone().unwrap_or_else(|| if c3 { "rom".into() } else { "app".into() });
     let console = o.console.clone().unwrap_or_else(|| if c3 { "uart0".into() } else { "both".into() });
