@@ -1,0 +1,72 @@
+[
+  {
+    "chip": "s3",
+    "base_user_seconds": [
+      0.25,
+      0.25,
+      0.25
+    ],
+    "candidate_user_seconds": [
+      0.25,
+      0.25,
+      0.25
+    ],
+    "base_median": 0.25,
+    "candidate_median": 0.25,
+    "core_instruction_counts": [
+      [
+        "0",
+        "11990488"
+      ],
+      [
+        "1",
+        "6798360"
+      ]
+    ],
+    "console_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+  },
+  {
+    "chip": "c3",
+    "base_user_seconds": [
+      2.36,
+      2.34,
+      2.34
+    ],
+    "candidate_user_seconds": [
+      2.39,
+      2.36,
+      2.38
+    ],
+    "base_median": 2.34,
+    "candidate_median": 2.38,
+    "core_instruction_counts": [
+      [
+        "single",
+        "4800000000"
+      ]
+    ],
+    "console_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+  },
+  {
+    "chip": "c6",
+    "base_user_seconds": [
+      3.14,
+      3.11,
+      3.06
+    ],
+    "candidate_user_seconds": [
+      3.12,
+      3.11,
+      3.14
+    ],
+    "base_median": 3.11,
+    "candidate_median": 3.12,
+    "core_instruction_counts": [
+      [
+        "single",
+        "4800000000"
+      ]
+    ],
+    "console_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+  }
+]
