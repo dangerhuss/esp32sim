@@ -58,6 +58,7 @@ impl Soc for S3 {
 }
 
 impl esp_soc::SocBus for SocBus {
+    fn sd_image_bytes(&self) -> Option<&[u8]> { self.periph.sdmmc.image() }
     fn enable_ble(&mut self, elf: &esp_soc::elf::Elf) -> Result<(), String> { self.ble.enable(&elf.by_name, elf.symbol_sizes.get("esp_bt_controller_init").copied().unwrap_or(0), &<Self as esp_soc::ble::vhci::VhciBus>::abi()) }
     fn ble_enabled(&self) -> bool { !self.ble.hooks.is_empty() }
     fn ble_pending_commands(&self) -> usize { self.ble.session.pending_commands() }

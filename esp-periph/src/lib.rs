@@ -31,6 +31,8 @@ pub mod rmt_compact;
 pub mod gpspi;
 pub mod rng;
 pub mod intmtx;
+pub mod sdcard;
+pub mod sdmmc_host;
 
 pub use device::{Device, WriteEffect};
 pub use mmio::{DeviceSet, Dispatch, Misc, NO_SOURCE};
@@ -55,6 +57,8 @@ pub use i2s::I2s;
 pub use rmt::{Rmt, RmtTxCh, RMT_MEM_WORDS};
 pub use gpspi::{GpSpi, GpSpiTransfer};
 pub use rng::Rng;
+pub use sdcard::{capacity_for, SdCard};
+pub use sdmmc_host::SdMmcHost;
 
 /// Clocks the shared IP is specified against; the CPU clock differs per chip and is a parameter.
 pub const APB_HZ: u64 = 80_000_000;

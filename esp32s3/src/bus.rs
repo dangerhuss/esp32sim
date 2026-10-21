@@ -3,6 +3,7 @@
 use crate::periph::{Peripherals, PERIPH_BASE, PERIPH_END};
 use crate::board::Board;
 mod dma;
+mod sdmmc;
 pub use dma::{DmaDescriptorFault, DmaDescriptorWord};
 use dma::Spi2DmaCompletion;
 #[cfg(test)]
@@ -501,6 +502,9 @@ impl SocBus {
             self.spi2_pins = self.board.uses_spi_pins().then(|| self.periph.spi2_pins());
         }
         self.periph.write32(a, v);
+        if (0x6002_8000..0x6002_9000).contains(&a) && self.periph.sdmmc.dma_pending() {
+            self.sdmmc_dma_step();
+        }
         if old_gpio_out != self.periph.gpio.out || old_gpio_enable != self.periph.gpio.enable {
             let changes = &self.periph.gpio.changes;
             if let Some(events) = &mut self.gpio_events {

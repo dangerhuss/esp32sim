@@ -28,6 +28,7 @@ PSRAM and register presets.
 | `--strap HEX`, `--reset-cause HEX`, `--efuse-regs F`, `--regs-init F` | reproduce a real chip's boot state (used by the differential tests) |
 | `--no-reboot` | stop at the first chip reset instead of rebooting from ROM |
 | `--flash-at OFFSET=FILE` (repeatable) | write a file into flash at a hex offset — a data partition's contents (the panel's `demo` partition takes `energydata.json`) |
+| `--sd-image FILE`, `--sd-save FILE` | S3 SDMMC slot1: attach a nonempty regular-file card image (at most 2 GiB); optionally preserve final bytes to a fresh output on normal exit. Physical device nodes and existing outputs are refused. This local extension qualifies functional SDK I/O, not physical card timing or power-loss behavior. |
 | `--stub SYMBOL[=value]` (repeatable) | return `value` (default 0) immediately when execution reaches the function's entry; numeric function addresses require a `0x` prefix; accepts decimal, `0x` hex, `true` (1) or `false` (0); rejects invalid values |
 | `--ble full` | experimental C3 register-level BLE controller; advertising, scanning and one virtual central; excludes `--ble` |
 | `--ble-scan` | enable a virtual active scanner in C3 full mode; sends SCAN_REQ and observes guest-configured SCAN_RSP |

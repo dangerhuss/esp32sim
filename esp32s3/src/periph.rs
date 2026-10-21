@@ -2,7 +2,7 @@
 //! S3-only blocks (interrupt matrix, WiFi MAC, PCNT, GP-SPI, LCD_CAM, EXTMEM, WDEV, regi2c) and
 //! the `Peripherals` set whose one table (`ENTRIES`) drives dispatch, sources, ticks and deadlines.
 use emu_core::{ClockDomain, ClockTree};
-use esp_periph::{GpSpi, Ledc, LedcLayout, Mcpwm};
+use esp_periph::{GpSpi, Ledc, LedcLayout, Mcpwm, SdMmcHost};
 use esp_periph::{device_set, mmio, Device, DeviceSet, Dispatch, Misc, WriteEffect};
 pub use esp_periph::rmt::RmtDma as Rmt;
 pub use esp_periph::{read_desc, reset_cause_name, Aes, DirtyMem, DmaDesc, Efuse, Gdma, GdmaInCh, GdmaOutCh, Gpio, I2s, RegRam, RmtTxCh, Rsa, RtcCntl, Sha, SpiMem, SystemRegs, Systimer, Timer, TimerGroup, Uart, UartLayout, UsbSerialJtag,
@@ -29,6 +29,8 @@ pub const SRC_I2S1: usize = 26;
 pub const SRC_RMT: usize = 40;
 pub const SRC_I2C0: usize = 42;
 pub const SRC_I2C1: usize = 43;
+/// `ETS_SDIO_HOST_INTR_SOURCE` (soc/interrupts.h, IDF v5.5.1): the SDMMC host, source 30.
+pub const SRC_SDMMC: usize = 30;
 pub const SRC_TG0_T0: usize = 50;
 pub const SRC_TG0_T1: usize = 51;
 pub const SRC_TG0_WDT: usize = 52;
@@ -427,6 +429,8 @@ pub struct Peripherals {
     pub i2s1: I2s,
     pub rmt: Rmt,
     pub io_mux: RegRam,
+    /// SDMMC host (0x60028000) with the attached card model
+    pub sdmmc: SdMmcHost,
     /// register RAM behind unmodelled blocks, first-touch logging, pc attribution
     pub misc: Misc,
     /// experiment hook: ESP_EMU_FAKE_READ=addr:or[:and],... applied to register reads
@@ -467,6 +471,7 @@ device_set! { Peripherals; clock: (clock) CPU_HZ, [(ClockDomain::Systimer, 15), 
                            SRC_DMA_IN_CH0, SRC_DMA_IN_CH0 + 1, SRC_DMA_IN_CH0 + 2, SRC_DMA_IN_CH0 + 3, SRC_DMA_IN_CH0 + 4];
     0x0f "I2S0" (i2s0) => [SRC_I2S0];
     0x2d "I2S1" (i2s1) => [SRC_I2S1];
+    0x28 "SDMMC" (sdmmc) => [SRC_SDMMC];
     0x16 "RMT" (rmt) => [SRC_RMT];
     0x13 "I2C0" optional (i2c[0]) => [SRC_I2C0];
     0x27 "I2C1" optional (i2c[1]) => [SRC_I2C1];
@@ -494,6 +499,9 @@ impl DeviceSet for Peripherals {
     fn pre_access(&mut self, block: u32, _off: u32, write: bool) {
         match block {
             0xc2 if !write => self.intmatrix.status = self.source_status(),   // INTERRUPT_*_STATUS reads the live sources
+            0x28 => self.sdmmc.apply_system_gate(                             // SDMMC gates off SYSTEM bit 7
+                self.system.ram.read(0x1c) & (1 << 7) != 0,
+                self.system.ram.read(0x24) & (1 << 7) != 0),
             0x35 => self.wifi.now_cycles = self.clock.cycles(),               // TSF timestamps
             0x08 => self.rtc.now_cycles = self.clock.cycles(),                // SENS ADC samples analog sources at this time
             _ => {}
@@ -511,6 +519,7 @@ impl Peripherals {
             efuse: Efuse::new(mac), system: SystemRegs::new(0x30), extmem: Extmem::new(), spi0: SpiMem::new(false), spi1: SpiMem::new(true),
             i2c: [crate::i2c::I2c::new(), crate::i2c::I2c::new()], lcd_cam: LcdCam::new(), spi2: GpSpi::new(), pcnt: Pcnt::new(), wifi: WifiMac::new(), fe: FeIq { word: 0 },
             aes: Aes::new(), rsa: Rsa::new(), sha: Sha::new(), wdev: Wdev::new(), i2c_mst: I2cMst::new(), gdma: Gdma::new(), i2s0: I2s::new(CPU_HZ), i2s1: I2s::new(CPU_HZ), rmt: Rmt::new(CPU_HZ),
+            sdmmc: SdMmcHost::new(),
             io_mux: RegRam::new(), misc: Misc::new(), fake_reads: std::env::var("ESP_EMU_FAKE_READ").ok().map(|v| v.split(',').filter_map(|e| { let mut p = e.split(':'); let a = u32::from_str_radix(p.next()?.trim_start_matches("0x"), 16).ok()?; let o = u32::from_str_radix(p.next().unwrap_or("0").trim_start_matches("0x"), 16).ok()?; let m = u32::from_str_radix(p.next().unwrap_or("ffffffff").trim_start_matches("0x"), 16).ok()?; Some((a, (o, m))) }).collect()).unwrap_or_default(),
             clock: Self::new_clock(),
             spi_exec: false, last_status: [0; 4], intmatrix_dirty: false,
@@ -573,6 +582,8 @@ impl Peripherals {
         // ESP-IDF v5.5.4 soc/system_reg.h: PERIP_CLK_EN1/RST_EN1 LCD_CAM bit 8.
         if addr == PERIPH_BASE + 0xc001c || addr == PERIPH_BASE + 0xc0024 {
             self.lcd_cam.set_clock_enabled(self.system.read(0x1c) & (1 << 8) != 0 && self.system.read(0x24) & (1 << 8) == 0);
+            // IDF v5.5.1 system_reg.h: PERIP_CLK_EN1/RST_EN1 bit 7 = SDIO host clock/reset.
+            self.sdmmc.apply_system_gate(self.system.read(0x1c) & (1 << 7) != 0, self.system.read(0x24) & (1 << 7) != 0);
         }
         if addr == PERIPH_BASE + 0xc0018 || addr == PERIPH_BASE + 0xc0020 {
             for (group, bit) in [17, 20].iter().enumerate() { self.mcpwm[group].clock_enabled = self.system.read(0x18) & (1 << bit) != 0 && self.system.read(0x20) & (1 << bit) == 0; }

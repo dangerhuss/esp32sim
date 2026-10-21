@@ -1,0 +1,284 @@
+{
+  "upstream_base": "63670bb128cf0a0c019a2009be62cfe56378ce0f",
+  "predecessor_commits": [
+    "51bb2bc7",
+    "5d45549d"
+  ],
+  "rustc": "1.99.1 (2026-10-13)",
+  "host_arch": "arm64",
+  "raw_receipt_sha256": "2bc26f524700d2fcb0cab0fbff48255740df317fb68dfbf8775075ecd05f30b7",
+  "redaction": "Removed machine-specific argv paths; commands and fixture identities retained separately.",
+  "samples": [
+    {
+      "chip": "s3",
+      "pair": 0,
+      "route": "main",
+      "user_seconds": 0.25,
+      "counts": [
+        "Halted",
+        "core0 11990488 + core1 6798360",
+        "30.000",
+        "7200000000",
+        "27229",
+        "6030"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 0,
+      "route": "candidate",
+      "user_seconds": 0.25,
+      "counts": [
+        "Halted",
+        "core0 11990488 + core1 6798360",
+        "30.000",
+        "7200000000",
+        "27229",
+        "6030"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 1,
+      "route": "candidate",
+      "user_seconds": 0.25,
+      "counts": [
+        "Halted",
+        "core0 11990488 + core1 6798360",
+        "30.000",
+        "7200000000",
+        "27229",
+        "6030"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 1,
+      "route": "main",
+      "user_seconds": 0.26,
+      "counts": [
+        "Halted",
+        "core0 11990488 + core1 6798360",
+        "30.000",
+        "7200000000",
+        "27229",
+        "6030"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 2,
+      "route": "main",
+      "user_seconds": 0.25,
+      "counts": [
+        "Halted",
+        "core0 11990488 + core1 6798360",
+        "30.000",
+        "7200000000",
+        "27229",
+        "6030"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 2,
+      "route": "candidate",
+      "user_seconds": 0.24,
+      "counts": [
+        "Halted",
+        "core0 11990488 + core1 6798360",
+        "30.000",
+        "7200000000",
+        "27229",
+        "6030"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "c3",
+      "pair": 0,
+      "route": "main",
+      "user_seconds": 2.36,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3028"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 0,
+      "route": "candidate",
+      "user_seconds": 2.44,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3028"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 1,
+      "route": "candidate",
+      "user_seconds": 2.31,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3028"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 1,
+      "route": "main",
+      "user_seconds": 2.36,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3028"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 2,
+      "route": "main",
+      "user_seconds": 2.39,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3028"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 2,
+      "route": "candidate",
+      "user_seconds": 2.39,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3028"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c6",
+      "pair": 0,
+      "route": "main",
+      "user_seconds": 3.21,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3029"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 0,
+      "route": "candidate",
+      "user_seconds": 3.15,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3029"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 1,
+      "route": "candidate",
+      "user_seconds": 3.13,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3029"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 1,
+      "route": "main",
+      "user_seconds": 3.21,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3029"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 2,
+      "route": "main",
+      "user_seconds": 3.17,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3029"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 2,
+      "route": "candidate",
+      "user_seconds": 3.15,
+      "counts": [
+        "Halted",
+        "4800000000",
+        "30.000",
+        "4800000000",
+        "0",
+        "3029"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    }
+  ],
+  "limits": "Three alternating pairs; no whole-machine load isolation or physical performance claim."
+}
