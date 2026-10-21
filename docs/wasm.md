@@ -315,3 +315,30 @@ builds a local stdio helper that reuses the existing VirtualNet/NAT. It opens
 no listening socket and does not terminate guest TLS or manufacture telemetry.
 Its bounded frame protocol is documented in the example. Keep private input
 cards, connection profiles and whole-device flash images outside Git.
+
+
+## C3 WPA3-SAE initial association
+
+The shared AP parser accepts `ssid=NAME,psk=PASSWORD,auth=sae` through
+`esp32sim_wifi` and the native `--wifi` option. The default stays WPA2 when a
+password is supplied and open otherwise. `sae` advertises group19/P-256 H2E,
+SAE AKM8, CCMP and required/capable PMF. It executes real SAE Commit/Confirm,
+SHA256 PTK derivation and AES-CMAC EAPOL authentication, followed by GTK/IGTK
+installation. The guest's Wi-Fi library and firmware image are unchanged.
+
+The scalar/curve core is reused from the pinned MIT-declared oxwifid source;
+see `esp-soc/src/wifi/sae/NOTICE`. AP scalars/nonces are deterministic simulation
+inputs, as with the existing WPA2 AP. Guest RNG remains a separate real-host
+entropy input. This peer is for initial association: PMF key installation is
+supported, but SA Query, authenticated robust-management teardown, reassociation,
+rekey and multi-station/radio qualification are not. Unverified teardown and
+reassociation are refused. A successful connection does not qualify RF behavior
+or production AP security.
+
+The C3 TX adapter removes the four-byte hardware FCS reserve at the explicit
+`StationLink::station_tx_with_fcs` boundary. SAE bodies must never parse that
+trailer as an information element. Direct `station_tx` callers supply frames
+without FCS. Other chip adapters are not newly qualified by the C3 evidence.
+
+See [EX234 evidence](evidence/wpa3-h2e/README.md) for unchanged-image retained
+telemetry and the remaining timing limits.

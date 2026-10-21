@@ -4,7 +4,7 @@ use super::{Emu, log, bytes};
 // Keep user-supplied per-event prices bounded well below the u32 timing accumulator.
 const MAX_TIMING_PRICE: u32 = 1_000_000;
 
-/// Attach the virtual access point and subnet: `ssid=NAME,psk=PASS,chan=N`. No NAT — the browser
+/// Attach the virtual access point and subnet: `ssid=NAME,psk=PASS,chan=N[,auth=sae]`. No NAT — the browser
 /// has no sockets — so DHCP, DNS, SNTP and ICMP answer, and connections past the gateway are refused.
 ///
 /// # Safety
@@ -23,7 +23,7 @@ pub unsafe extern "C" fn esp32sim_wifi(e: *mut Emu, spec: *const u8, len: usize)
         Ok(cfg) => cfg,
         Err(reason) => { log(&format!("[emu] wifi: {reason}")); return 1; }
     };
-    log(&format!("[emu] virtual AP '{}' ({}), subnet 10.0.2.0/24, no NAT in the browser", cfg.ssid, if cfg.psk.is_some() { "WPA2-PSK" } else { "open" }));
+    log(&format!("[emu] virtual AP '{}' ({}), subnet 10.0.2.0/24, no NAT in the browser", cfg.ssid, if cfg.auth == esp_soc::wifi::ApAuth::SaeH2e { "WPA3-SAE H2E" } else if cfg.psk.is_some() { "WPA2-PSK" } else { "open" }));
     // the same access point and network behind every chip's MAC; no NAT in the browser
     if let Err(reason) = e.m.bus().attach_wifi(cfg, None) { log(&format!("[emu] wifi: {reason}")); return 1; }
     0

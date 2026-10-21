@@ -1,0 +1,32 @@
+SAE/group19 core adapted from https://github.com/spr-networks/oxwifid
+Revision: 254818c6ee55937a20ac27ece62b2202baef3acf
+Upstream files: src/auth/wpa3/{sae,group19}.rs. Upstream Cargo.toml declares MIT.
+Copyright: SPR Networks and oxwifid contributors.
+
+Local adaptations: module paths; remove unrelated OWE re-exports; explicit caller
+scalars instead of an OS RNG so the same peer is available on native and WASM;
+local equal-length constant-time authenticator comparison; current stable Clippy
+chunks iteration and helper placement. J.10 tests and AES-CMAC are adapted from
+tests/sae_vectors.rs and src/auth/crypto.rs under the same declared MIT license. Protocol/curve code
+remains upstream and is checked with independent Espressif/IEEE known answers.
+Virtual-AP deterministic keys are for simulation, not production Wi-Fi security.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.

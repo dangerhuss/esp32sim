@@ -277,7 +277,10 @@ impl SocBus {
             self.periph.wifi.tx_done(slot);
             self.irq_dirty = true;
             let now_us = self.now_us();
-            self.periph.wifi.link.station_tx(&frame, now_us);
+            // IDF6.1 libpp TX DMA includes the four-byte MAC FCS reserve.
+            // Confirmed by the unchanged SDK SAE Commit length and valid
+            // 98-byte group19 body; the reserve is not a trailing SAE IE.
+            self.periph.wifi.link.station_tx_with_fcs(&frame, now_us);
         }
     }
 

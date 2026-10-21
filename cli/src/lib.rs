@@ -334,7 +334,7 @@ fn setup_s3(o: &Opts) -> esp32s3::Machine {
 /// the NAT to the host, the same for every chip.
 fn wifi_config(spec: &str, nat: bool, net_log: bool) -> (esp_soc::wifi::ApConfig, Option<esp_soc::nat::Nat>) {
     let cfg = esp_soc::wifi::ApConfig::parse(spec).unwrap_or_else(|e| { eprintln!("--wifi: {e}"); std::process::exit(2) });
-    eprintln!("[emu] virtual AP '{}' bssid {} channel {} ({})", cfg.ssid, esp_soc::wifi::mac_str(&cfg.bssid), cfg.channel, if cfg.psk.is_some() { "WPA2-PSK" } else { "open" });
+    eprintln!("[emu] virtual AP '{}' bssid {} channel {} ({})", cfg.ssid, esp_soc::wifi::mac_str(&cfg.bssid), cfg.channel, if cfg.auth == esp_soc::wifi::ApAuth::SaeH2e { "WPA3-SAE H2E" } else if cfg.psk.is_some() { "WPA2-PSK" } else { "open" });
     let nat = nat.then(|| esp_soc::nat::Nat::new(net_log));
     if let Some(nat) = &nat { eprintln!("[emu] NAT to the host network enabled (DNS via {}.{}.{}.{})", nat.resolver[0], nat.resolver[1], nat.resolver[2], nat.resolver[3]); }
     let net = esp_soc::net::VirtualNet::new(false);   // its fixed addresses, for the line below
