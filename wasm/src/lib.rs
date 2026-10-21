@@ -13,6 +13,8 @@ mod machine;
 mod network;
 mod ethernet;
 mod ble;
+mod host_io;
+pub use host_io::*;
 pub use ble::*;
 pub use ethernet::*;
 mod s3;
@@ -48,6 +50,7 @@ pub struct Emu {
     ethernet_out: Vec<Vec<u8>>,
     ble_out: String,
     booted: bool,
+    entropy: Option<host_io::Entropy>,
     #[cfg(target_arch = "wasm32")]
     jit: BrowserJit,
 }
@@ -170,6 +173,7 @@ pub unsafe extern "C" fn esp32sim_new(board: *const u8, board_len: usize, flash_
         m,
         out: Vec::new(), ethernet_out: Vec::new(), ble_out: String::new(),
         booted: false,
+        entropy: None,
         #[cfg(target_arch = "wasm32")]
         jit: BrowserJit::default(),
     }))

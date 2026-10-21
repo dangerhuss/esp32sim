@@ -287,3 +287,31 @@ success or 1 for invalid commands/state/chip. Reads use the guest ATT server.
 The central models one unencrypted 1M CSA#1 connection with a 30 ms interval,
 2 s supervision timeout and ATT MTU 23. See [EX213](evidence/ble-c3-connection/README.md)
 for model limits and the production-module reconnect test.
+
+## Explicit connected SDK host bindings
+
+`esp32sim_sd_attach(e, ptr, len)` attaches an in-memory image before boot to
+the same S3 SDMMC or C3 X3-wired SDSPI model used by the native CLI. Images must
+be nonempty sector multiples, at most64 MiB. Small images use the card model's
+normal CSD capacity padding. Other chips and attachment after boot are refused.
+`esp32sim_sd_len(e)` reports the actual modeled capacity; allocate that many
+bytes and call `esp32sim_sd_copy(e, ptr, len)` to preserve the complete image.
+The copy refuses truncation. These are host bindings; the browser form does not
+yet attach or persist a card automatically. Electrical/card/cache timing and
+sudden power loss remain uncalibrated.
+
+Connected TLS runs must explicitly call `esp32sim_rng_host(e)` before boot, then
+feed actual host cryptographic entropy through `esp32sim_rng_feed(e, ptr, len)`.
+Input is little-endian u32 words, bounded to4096 unread words. Partial words,
+overflow and feeding before selection are refused without mutation. Check
+`esp32sim_rng_available(e)` and refill between run slices using Web Crypto or
+Node crypto. Exhaustion stops the model rather than falling back to its offline
+deterministic generator. No new WASM imports are required; existing offline
+frontends retain their default behavior.
+
+The Ethernet relay above carries the unchanged guest's encrypted packets. For
+a Node-hosted check, `cargo build --release -p esp-soc --example ethernet_stdio`
+builds a local stdio helper that reuses the existing VirtualNet/NAT. It opens
+no listening socket and does not terminate guest TLS or manufacture telemetry.
+Its bounded frame protocol is documented in the example. Keep private input
+cards, connection profiles and whole-device flash images outside Git.
