@@ -32,6 +32,7 @@ impl Soc for C3 {
 }
 
 impl esp_soc::SocBus for SocBus {
+    fn sd_image_bytes(&self) -> Option<&[u8]> { self.board.sd_image_bytes() }
     fn set_rng_source(&mut self, source: esp_periph::rng::RngSource) -> Result<(), String> { self.periph.rng.entropy = Some(source); Ok(()) }
     fn enable_ble(&mut self, elf: &esp_soc::elf::Elf) -> Result<(), String> {
         if self.periph.ble_lc.enabled() { return Err("HCI BLE and full BLE are mutually exclusive".into()) }

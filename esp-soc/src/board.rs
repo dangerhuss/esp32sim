@@ -119,6 +119,8 @@ pub trait BoardModel {
     fn named_pin(&self, _name: &str) -> Option<u8> { None }
     /// The rotary encoder's (CLK, DT) pins, if there is one.
     fn encoder(&self) -> Option<(u8, u8)> { None }
+    /// Attached disposable card bytes for an explicit host save (no host I/O here).
+    fn sd_image_bytes(&self) -> Option<&[u8]> { None }
     /// Lines for the end-of-run report.
     fn report(&self) -> String { String::new() }
 }

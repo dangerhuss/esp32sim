@@ -10,6 +10,8 @@
 //! fields are advisory values real cards vary on; nothing the
 //! emulated drivers parse.
 
+pub mod spi;
+
 /// Card states (SD spec state numbers, R1 bits [12:9]). The model never enters the Data/Rcv/Prg
 /// states: data phases complete synchronously inside the command that starts them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -1,0 +1,226 @@
+{
+  "base": "57df8eae0952d110bb38eb85331b2e3642e6fc03",
+  "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "binary_sha256": {
+    "base": "890acbc1ef4a29347ceb67f1e2c2547705de6ad33b220eae3252515e474e6ba7",
+    "candidate": "007bbd0e7aaa965d7e296d0ca6fefd66b5629ee4a4f5549fbf62dfac4e3795de"
+  },
+  "rows": [
+    {
+      "chip": "s3",
+      "pair": 0,
+      "route": "base",
+      "user_seconds": 0.26,
+      "counts": [
+        "Halted \u2014 core0 11990488 + core1 6798360 insns",
+        "30.000s (7200000000 cycles); 27229 exceptions, 6030 interrupts"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 0,
+      "route": "candidate",
+      "user_seconds": 0.25,
+      "counts": [
+        "Halted \u2014 core0 11990488 + core1 6798360 insns",
+        "30.000s (7200000000 cycles); 27229 exceptions, 6030 interrupts"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 1,
+      "route": "candidate",
+      "user_seconds": 0.26,
+      "counts": [
+        "Halted \u2014 core0 11990488 + core1 6798360 insns",
+        "30.000s (7200000000 cycles); 27229 exceptions, 6030 interrupts"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 1,
+      "route": "base",
+      "user_seconds": 0.26,
+      "counts": [
+        "Halted \u2014 core0 11990488 + core1 6798360 insns",
+        "30.000s (7200000000 cycles); 27229 exceptions, 6030 interrupts"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 2,
+      "route": "base",
+      "user_seconds": 0.25,
+      "counts": [
+        "Halted \u2014 core0 11990488 + core1 6798360 insns",
+        "30.000s (7200000000 cycles); 27229 exceptions, 6030 interrupts"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "s3",
+      "pair": 2,
+      "route": "candidate",
+      "user_seconds": 0.26,
+      "counts": [
+        "Halted \u2014 core0 11990488 + core1 6798360 insns",
+        "30.000s (7200000000 cycles); 27229 exceptions, 6030 interrupts"
+      ],
+      "stdout_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+    },
+    {
+      "chip": "c3",
+      "pair": 0,
+      "route": "base",
+      "user_seconds": 2.43,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3028 interrupts"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 0,
+      "route": "candidate",
+      "user_seconds": 2.46,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3028 interrupts"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 1,
+      "route": "candidate",
+      "user_seconds": 2.46,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3028 interrupts"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 1,
+      "route": "base",
+      "user_seconds": 2.39,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3028 interrupts"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 2,
+      "route": "base",
+      "user_seconds": 2.41,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3028 interrupts"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c3",
+      "pair": 2,
+      "route": "candidate",
+      "user_seconds": 2.47,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3028 interrupts"
+      ],
+      "stdout_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+    },
+    {
+      "chip": "c6",
+      "pair": 0,
+      "route": "base",
+      "user_seconds": 3.16,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3029 interrupts"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 0,
+      "route": "candidate",
+      "user_seconds": 3.15,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3029 interrupts"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 1,
+      "route": "candidate",
+      "user_seconds": 3.17,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3029 interrupts"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 1,
+      "route": "base",
+      "user_seconds": 3.16,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3029 interrupts"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 2,
+      "route": "base",
+      "user_seconds": 3.17,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3029 interrupts"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    },
+    {
+      "chip": "c6",
+      "pair": 2,
+      "route": "candidate",
+      "user_seconds": 3.19,
+      "counts": [
+        "Halted \u2014 4800000000 insns",
+        "30.000s (4800000000 cycles); 0 exceptions, 3029 interrupts"
+      ],
+      "stdout_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+    }
+  ],
+  "medians": {
+    "s3": {
+      "base": 0.26,
+      "candidate": 0.26,
+      "change_percent": 0.0
+    },
+    "c3": {
+      "base": 2.41,
+      "candidate": 2.46,
+      "change_percent": 2.07
+    },
+    "c6": {
+      "base": 3.16,
+      "candidate": 3.17,
+      "change_percent": 0.32
+    }
+  },
+  "notes": "Three alternating pairs; native release, unused card path. Exact instruction/cycle/exception/interrupt totals and console hashes required. Short timings and host noise do not establish speedup."
+}

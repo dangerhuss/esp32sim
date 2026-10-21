@@ -5,6 +5,7 @@
 //! SRAM0 below it is the instruction cache's, reachable only from the instruction bus.
 
 mod pins;
+mod spi;
 
 use crate::periph::{Peripherals, PERIPH_BASE, PERIPH_END};
 use riscv_rv32::bus::{Bus, Fault};
@@ -143,7 +144,7 @@ impl SocBus {
         // read returns zeros — which is exactly how `E memspi: no response` showed up on a
         // non-power-on boot while a power-on boot happened to survive it.
         if self.periph.spi_exec { self.run_spi(); }
-        if a == 0x6002_4000 && self.periph.spi2.has_pending_transfer() { self.deliver_spi2_transfer(); }
+        if matches!(a & !0xfff, 0x6002_4000 | 0x6003_f000) && self.periph.spi2.has_pending_transfer() { self.spi2_dma_write(); }
         self.irq_dirty = true;
     }
 
@@ -173,17 +174,6 @@ impl SocBus {
         }
         self.board.gpio_output_at(self.cycles, changes, self.periph.gpio.enable, self.periph.gpio.out);
         self.periph.gpio.changes.clear();
-    }
-
-    fn deliver_spi2_transfer(&mut self) {
-        let Some(transfer) = self.periph.spi2.take_transfer() else { return };
-        let rx = if self.board.uses_spi_pins() {
-            self.board.spi_transfer_pins(2, self.periph.spi2_pins(), &transfer.tx, transfer.rx_len)
-        } else {
-            self.board.spi_transfer(2, &transfer.tx, transfer.rx_len)
-        };
-        self.periph.spi2.finish_transfer(transfer, &rx);
-        self.irq_dirty = true;
     }
 
     #[inline(never)]
