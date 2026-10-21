@@ -15,6 +15,8 @@ mod web;
 
 #[derive(Clone, Debug)]
 pub enum ScriptAction { Gpio(u8, bool), Serial(String), Uart(usize, String), Stop, Touch(u16, u16, bool), Poke(u32, u32), TouchPad(u8, bool), Ble(String), Analog(u8, esp_periph::AnalogSource),
+    /// An upstream TCP path outage; leaves Wi-Fi/DHCP/DNS/SNTP available.
+    TcpOutage(bool),
     /// `waituart0 <timeout_s> <text>`: hold the rest of the script until UART0 prints `text` (or the
     /// timeout passes), then shift every later action by the time actually waited. Fields: text,
     /// timeout in cycles, the cycle the script placed it at.
@@ -1051,6 +1053,12 @@ impl<S: Soc> Machine<S> {
                     self.bus.analog_set(pin, src)
                 }
                 ScriptAction::WaitUart0(..) => {}
+                ScriptAction::TcpOutage(offline) => {
+                    match self.bus.set_tcp_outage(offline) {
+                        Ok(()) => eprintln!("[net] tcp_outage={} cycle={t}", u8::from(offline)),
+                        Err(error) => { eprintln!("[net] TCP fault failed: {error}"); self.max_cycles = 0; stopped = true; }
+                    }
+                }
                 ScriptAction::Ble(command) => { if let Err(error) = self.bus.ble_command(&command) { eprintln!("[ble] {error}"); } }
             }
         }
@@ -1172,6 +1180,17 @@ impl<S: Soc> Machine<S> {
                     if !self.bus.ble_enabled() { return Err(format!("line {}: BLE requires --ble with the application ELF, or C3 --ble full", ln + 1)); }
                     ev.push((c, ScriptAction::Ble(rest.to_string())));
                 },
+                "tcp" => {
+                    let mut args = rest.split_whitespace();
+                    let offline = match args.next() {
+                        Some("offline") => true, Some("online") => false,
+                        _ => return Err(format!("line {}: tcp needs offline or online", ln + 1)),
+                    };
+                    if args.next().is_some_and(|v| !v.starts_with('#')) {
+                        return Err(format!("line {}: tcp takes one state", ln + 1));
+                    }
+                    ev.push((c, ScriptAction::TcpOutage(offline)));
+                }
                 "stop" => ev.push((c, ScriptAction::Stop)),
                 "waituart0" => { let mut p = rest.splitn(2, char::is_whitespace); let to: f64 = p.next().and_then(|x| x.parse().ok()).ok_or_else(|| format!("line {}: waituart0 <timeout_s> <text>", ln + 1))?;
                                  let text = p.next().unwrap_or("").trim().to_string(); if text.is_empty() { return Err(format!("line {}: waituart0 needs text", ln + 1)); }

@@ -1,0 +1,53 @@
+[
+  {
+    "chip": "s3",
+    "base_user_seconds": [
+      0.25,
+      0.26,
+      0.25
+    ],
+    "candidate_user_seconds": [
+      0.26,
+      0.24,
+      0.26
+    ],
+    "base_median": 0.25,
+    "candidate_median": 0.26,
+    "instructions": 6798360,
+    "console_sha256": "31c5aa0d45b2d0022c7d88b8b8cb6e7b451ae26ab16e91a590ae18ea44cabca2"
+  },
+  {
+    "chip": "c3",
+    "base_user_seconds": [
+      2.47,
+      2.4,
+      2.43
+    ],
+    "candidate_user_seconds": [
+      2.48,
+      2.46,
+      2.33
+    ],
+    "base_median": 2.43,
+    "candidate_median": 2.46,
+    "instructions": 4800000000,
+    "console_sha256": "3b9d8d3eb053a97670f11896674e70ffc968fd7a803cb2cdc5c051414af94efd"
+  },
+  {
+    "chip": "c6",
+    "base_user_seconds": [
+      3.09,
+      3.04,
+      3.05
+    ],
+    "candidate_user_seconds": [
+      3.01,
+      3.09,
+      3.09
+    ],
+    "base_median": 3.05,
+    "candidate_median": 3.09,
+    "instructions": 4800000000,
+    "console_sha256": "bd69fbb9ac5c677337a293c1ec0ff7941306eec82c499290917a7c42360f86ad"
+  }
+]

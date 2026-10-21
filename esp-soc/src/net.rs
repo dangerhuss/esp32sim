@@ -10,6 +10,8 @@
 
 pub(crate) mod packet;
 use packet::{checksum, ethernet, ip_packet, transport_checksum, udp_packet, GATEWAY_MAC};
+#[cfg(test)]
+mod tcp_outage_tests;
 
 pub struct VirtualNet {
     pub gw_mac: [u8; 6],
@@ -28,6 +30,7 @@ pub struct VirtualNet {
     pub pings: u64,
     pub unhandled: u64,
     now_us: u64,
+    tcp_outage: bool,
 }
 
 fn be16(b: &[u8]) -> u16 { u16::from_be_bytes([b[0], b[1]]) }
@@ -39,8 +42,19 @@ impl VirtualNet {
     pub fn new(log: bool) -> Self {
         VirtualNet { gw_mac: GATEWAY_MAC, gw_ip: [10, 0, 2, 2], dns_ip: [10, 0, 2, 3],
                      sta_ip: [10, 0, 2, 15], mask: [255, 255, 255, 0],
-                     log, nat: None, dhcp_acks: 0, dns_answers: 0, ntp_answers: 0, tcp_rejects: 0, arp_replies: 0, pings: 0, unhandled: 0, now_us: 0 }
+                     log, nat: None, dhcp_acks: 0, dns_answers: 0, ntp_answers: 0, tcp_rejects: 0, arp_replies: 0, pings: 0, unhandled: 0, now_us: 0, tcp_outage: false }
     }
+
+    /// An explicit host-side TCP-path fault, not a Wi-Fi association/RF model.
+    /// DNS, SNTP, DHCP and the AP keep working. Restoring the path preserves the
+    /// NAT's resolver and UDP state; firmware must reconnect its closed sockets.
+    pub fn set_tcp_outage(&mut self, offline: bool) {
+        if offline && !self.tcp_outage {
+            if let Some(nat) = &mut self.nat { nat.disconnect_tcp(); }
+        }
+        self.tcp_outage = offline;
+    }
+    pub fn tcp_outage(&self) -> bool { self.tcp_outage }
 
     /// Handle one Ethernet frame from the station; returns frames to send back to it.
     pub fn handle(&mut self, eth: &[u8], now_us: u64) -> Vec<Vec<u8>> {
@@ -103,6 +117,11 @@ impl VirtualNet {
                 let now = self.now_us;
                 self.nat.as_mut().unwrap().udp_out(src, &sip, sport, &host_dst, &reply_src, dport, &body[8..], now);
                 Vec::new()
+            }
+            6 if self.tcp_outage && body.len() >= 20 => {
+                // RFC 9293 section 3.10.7.1: never reset a reset; an ACKed
+                // segment is refused with RST.SEQ=SEG.ACK, not a SYN-only ACK.
+                if body[13] & 4 != 0 { Vec::new() } else { self.tcp_reject(body, src, &sip, &dip) }
             }
             6 if self.nat.is_some() => {
                 let now = self.now_us;
@@ -237,16 +256,20 @@ impl VirtualNet {
         vec![self.frame(src, 0x0800, &ip_packet(17, dip, sip, &udp))]
     }
 
-    /// Nothing here speaks TCP yet, so refuse connections immediately instead of letting firmware
-    /// sit in a 30-second connect timeout. A NAT backend is what will make these work.
+    /// Refuse a segment when forwarding is absent or deliberately interrupted.
     fn tcp_reject(&mut self, t: &[u8], src: &[u8; 6], sip: &[u8; 4], dip: &[u8; 4]) -> Vec<Vec<u8>> {
+        let header = usize::from(t[12] >> 4) * 4;
+        if header < 20 || header > t.len() { return self.invalid_ipv4(); }
         let (sport, dport) = (be16(&t[0..2]), be16(&t[2..4]));
         let seq = u32::from_be_bytes([t[4], t[5], t[6], t[7]]);
+        let ack = u32::from_be_bytes([t[8], t[9], t[10], t[11]]);
+        let length = (t.len() - header) as u32 + u32::from(t[13] & 2 != 0) + u32::from(t[13] & 1 != 0);
         let mut r = Vec::with_capacity(20);
         r.extend_from_slice(&dport.to_be_bytes()); r.extend_from_slice(&sport.to_be_bytes());
-        r.extend_from_slice(&[0, 0, 0, 0]);                              // seq 0
-        r.extend_from_slice(&seq.wrapping_add(1).to_be_bytes());          // ack the SYN
-        r.extend_from_slice(&[0x50, 0x14, 0, 0, 0, 0, 0, 0]);            // RST|ACK
+        let (reset_seq, reset_ack, flags) = if t[13] & 0x10 != 0 { (ack, 0, 4) } else { (0, seq.wrapping_add(length), 0x14) };
+        r.extend_from_slice(&reset_seq.to_be_bytes());
+        r.extend_from_slice(&reset_ack.to_be_bytes());
+        r.extend_from_slice(&[0x50, flags, 0, 0, 0, 0, 0, 0]);
         let c = transport_checksum(dip, sip, 6, &r).to_be_bytes(); r[16] = c[0]; r[17] = c[1];
         self.tcp_rejects += 1;
         if self.log { eprintln!("[net] TCP {}.{}.{}.{}:{} -> refused (no NAT backend yet)", dip[0], dip[1], dip[2], dip[3], dport); }

@@ -422,6 +422,27 @@ fn scripts_use_the_board() {
 }
 
 #[test]
+fn scripted_tcp_outage_is_reversible_without_reattaching_wifi() {
+    use esp_soc::SocBus;
+    let mut m = machine64();
+    park(&mut m,0,IRAM,&SPIN);
+    m.bus.attach_wifi(esp_soc::wifi::ApConfig::parse("ssid=fixture").unwrap(),Some(esp_soc::nat::Nat::new(false))).unwrap();
+    m.bus.periph.wifi.link.net_mut().unwrap().dhcp_acks = 7;
+    m.load_script("0 tcp offline\n0.000001 tcp online\n").unwrap();
+    m.max_cycles = 64;
+    assert!(matches!(m.run(u64::MAX),Stop::Halted));
+    assert!(m.bus.periph.wifi.link.net().unwrap().tcp_outage());
+    m.max_cycles = 512;
+    assert!(matches!(m.run(u64::MAX),Stop::Halted));
+    assert!(!m.bus.periph.wifi.link.net().unwrap().tcp_outage());
+    assert_eq!(m.bus.periph.wifi.link.net().unwrap().dhcp_acks,7);
+    assert!(m.bus.periph.wifi.link.ap().is_some());
+    for invalid in ["0 tcp", "0 tcp off", "0 tcp offline extra"] {
+        assert!(m.load_script(invalid).is_err(),"accepted {invalid}");
+    }
+}
+
+#[test]
 fn browser_touch_reaches_the_amoled_controller_and_gpio() {
     let mut m = machine();
     let board = esp32s3::board::WaveshareAmoled18V2::new();

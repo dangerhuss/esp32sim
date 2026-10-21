@@ -182,6 +182,10 @@ pub struct Nat {
 }
 
 impl Nat {
+    /// Model losing the upstream TCP path. Keep UDP/resolver configuration and
+    /// counters, but close existing host sockets rather than resume stale TLS.
+    pub fn disconnect_tcp(&mut self) { self.tcp.clear(); }
+
     pub fn new(log: bool) -> Self {
         Self { tcp: Vec::new(), udp: Vec::new(), isn: 0x1000, resolver: host_resolver(), log,
             tcp_opened: 0, tcp_refused: 0, udp_flows: 0, udp_evicted: 0, udp_send_errors: 0, bytes_to_host: 0, bytes_to_guest: 0 }

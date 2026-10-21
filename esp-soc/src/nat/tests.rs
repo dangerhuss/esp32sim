@@ -1,6 +1,24 @@
 use super::*;
 use std::net::TcpListener;
 
+#[test]
+fn disconnect_tcp_closes_host_stream_but_preserves_udp_and_resolver() {
+    let (socket, mut peer) = socket_pair();
+    let mut connection = flow();
+    connection.transport = Transport::Connected(socket);
+    let mut nat = Nat::new(false);
+    nat.resolver = [127,0,0,1];
+    nat.tcp.push(connection);
+    nat.udp_out(&[2;6],&[10,0,2,15],2345,&[127,0,0,1],&[127,0,0,1],9,b"fixture",0);
+    assert_eq!(nat.udp.len(),1);
+    nat.disconnect_tcp();
+    assert!(nat.tcp.is_empty());
+    assert_eq!(nat.udp.len(),1);
+    assert_eq!(nat.resolver,[127,0,0,1]);
+    let mut byte = [0];
+    assert_eq!(peer.read(&mut byte).unwrap(),0,"the host socket must close, not merely pause");
+}
+
 fn flow() -> Tcp {
     Tcp { guest_mac: [2; 6], guest_ip: [10, 0, 2, 15], guest_port: 1234,
         dst_ip: [127, 0, 0, 1], dst_port: 80, transport: Transport::Closed,
