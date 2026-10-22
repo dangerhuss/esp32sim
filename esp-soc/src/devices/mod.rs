@@ -11,3 +11,4 @@ pub use spi_bitbang::SpiBitBang;
 pub use ws2812::Ws2812Chain;
 
 pub mod x3_sd;
+pub mod x3_panel;

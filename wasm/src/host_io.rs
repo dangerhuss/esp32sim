@@ -7,6 +7,16 @@ pub(super) type Entropy = Rc<RefCell<VecDeque<u32>>>;
 const ENTROPY_WORDS: usize = 4096;
 const MAX_CARD_BYTES: usize = 64 << 20;
 
+/// Raw analog-pad input for the chip's actual ADC conversion boundary.
+/// Returns one for an unsupported pad or a value outside the 12-bit range.
+/// # Safety
+/// `e` is an exclusively borrowed live emulator.
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_adc_raw(e:*mut Emu,pin:u32,raw:u32)->u32 {
+    if pin>u8::MAX.into() || raw>4095 {return 1;}
+    u32::from(!unsafe{&mut *e}.m.bus().adc_set_raw(pin as u8,raw as u16))
+}
+
 /// Attach a bounded, disposable SD image before boot, using the native model.
 /// Returns 1 for an unsupported chip, invalid image size or an already booted machine.
 ///
@@ -99,6 +109,21 @@ mod tests {
     use super::*;
     use crate::{esp32sim_delete, esp32sim_new};
     use esp_periph::device::Device;
+
+    #[test]
+    fn raw_adc_pad_input_is_bounded_and_reaches_the_c3_pad() {
+        unsafe {
+            let e=esp32sim_new(b"esp32c3".as_ptr(),7,16,0);
+            assert_eq!(esp32sim_adc_raw(e,1,1000),0);
+            assert_eq!(esp32sim_adc_raw(e,1,4096),1);
+            assert_eq!(esp32sim_adc_raw(e,256,1),1);
+            assert_eq!(esp32sim_adc_raw(e,6,1000),1);
+            let MachineKind::C3(m)=&mut (*e).m else {panic!("wrong chip")};
+            m.bus.periph.adc.write(0x20,(1<<31)|(1<<29)|(1<<25));
+            assert_eq!(m.bus.periph.adc.read(0x2c),1000);
+            esp32sim_delete(e);
+        }
+    }
 
     #[test]
     fn card_roundtrip_and_refusals_preserve_owned_bytes() {

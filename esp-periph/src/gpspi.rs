@@ -32,17 +32,26 @@ pub struct GpSpiTransfer {
 /// supplies any DMA data, asks its board for the MISO response, then finishes the transfer.
 pub struct GpSpi { pub regs: RegRam, pub w: [u32; 16], pub int_raw: u32, pub int_ena: u32, pub transfers: u64, pub log: bool,
                    /// bit length of a MOSI phase that DMA must supply, until the bus completes it
-                   pub dma_tx_pending: Option<u32>, pending: Option<GpSpiTransfer> }
+                   pub dma_tx_pending: Option<u32>, pending: Option<GpSpiTransfer>, software_int_set: bool, software_raw_set: bool }
 impl Default for GpSpi { fn default() -> Self { Self::new() } }
 
 impl GpSpi {
-    pub fn new() -> Self { GpSpi { regs: RegRam::new(), w: [0; 16], int_raw: 0, int_ena: 0, transfers: 0, log: false, dma_tx_pending: None, pending: None } }
+    pub fn new() -> Self { GpSpi { regs: RegRam::new(), w: [0; 16], int_raw: 0, int_ena: 0, transfers: 0, log: false, dma_tx_pending: None, pending: None, software_int_set: false, software_raw_set: false } }
+    /// ESP-IDF6.1 S3 spi_struct.h DMA_INT_SET (0x44), and spi_ll_set_int_stat:
+    /// software primes TRANS_DONE to start the interrupt-driven master queue.
+    /// Opt-in: other chip layouts keep their existing behavior.
+    pub fn with_software_int_set() -> Self { Self { software_int_set: true, ..Self::new() } }
+    /// ESP-IDF6.1 fff9895c esp_hal_gpspi/esp32c3/include/hal/spi_ll.h
+    /// spi_ll_set_int_stat writes DMA_INT_RAW.trans_done at 0x3c. Unlike S3,
+    /// C3 has no DMA_INT_SET register. Opt-in preserves other chip behavior.
+    pub fn with_software_raw_set() -> Self { Self { software_raw_set:true, ..Self::new() } }
     pub fn irq(&self) -> bool { self.int_raw & self.int_ena != 0 }
     pub fn read(&self, off: u32) -> u32 {
         match off {
             0x00 => (self.regs.read(0) & !((1 << 23) | (1 << 24)))
                 | if self.pending.is_some() { 1 << 24 } else { 0 }, // USR stays busy until completion
             0x34 => self.int_ena, 0x3c => self.int_raw, 0x40 => self.int_raw & self.int_ena,
+            0x44 if self.software_int_set => 0, // write-one-to-set, not register RAM
             0x98..=0xd4 => self.w[((off - 0x98) / 4) as usize],
             0xf0 => 0x2101_0100,
             _ => self.regs.read(off),
@@ -52,6 +61,8 @@ impl GpSpi {
         match off {
             0x00 => { self.regs.write(0, v & !((1 << 23) | (1 << 24))); if v & (1 << 24) != 0 && self.pending.is_none() { self.transfer(); } }
             0x34 => self.int_ena = v, 0x38 => self.int_raw &= !v,
+            0x3c if self.software_raw_set => self.int_raw |= v & 0x1f_ffff,
+            0x44 if self.software_int_set => self.int_raw |= v & 0x1f_ffff,
             0x98..=0xd4 => self.w[((off - 0x98) / 4) as usize] = v,
             _ => self.regs.write(off, v),
         }
@@ -171,6 +182,35 @@ impl Device for GpSpi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c3_raw_write_primes_irq_at_its_actual_register_without_a_transfer() {
+        let mut spi=GpSpi::with_software_raw_set();
+        spi.write(0x3c,1<<12);spi.write(0x34,1<<12);
+        assert!(spi.irq());assert_eq!(spi.transfers,0);
+        spi.write(0x38,1<<12);assert!(!spi.irq());
+        spi.write(0x44,1<<12);assert!(!spi.irq());
+        let mut s3=GpSpi::with_software_int_set();s3.write(0x3c,1<<12);
+        assert_eq!(s3.read(0x3c),0);
+    }
+
+    #[test]
+    fn s3_software_interrupt_starts_sdk_master_without_inventing_a_transfer() {
+        let mut spi = GpSpi::with_software_int_set();
+        spi.write(0x44, (1 << 12) | (1 << 31));
+        assert_eq!(spi.read(0x3c), 1 << 12);
+        assert!(!spi.irq());
+        spi.write(0x34, 1 << 12);
+        assert!(spi.irq());
+        assert_eq!(spi.read(0x40), 1 << 12);
+        assert_eq!(spi.transfers, 0);
+        assert!(spi.take_transfer().is_none());
+        spi.write(0x38, 1 << 12);
+        assert!(!spi.irq());
+        assert_eq!(spi.read(0x44), 0);
+        spi.write(0x44, 0);
+        assert_eq!(spi.read(0x3c), 0);
+    }
 
     #[test]
     fn wire_time_uses_read_lanes_and_duplex_phase_order() {
