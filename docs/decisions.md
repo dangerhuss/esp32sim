@@ -374,3 +374,29 @@ It does not claim RF or connection-event timing, pairing, encryption sessions or
 controller register fidelity. A fuller HCI controller can replace this one; a
 future baseband model can remove the substitution. C6's native mbuf/NPL ABI is
 restricted to IDF 5.5.x at enable time. The disabled path installs no hooks.
+
+## S3 RTC deep sleep and external custody
+
+The S3 sleep boundary follows ESP-IDF v6.1 `esp_hw_support/port/esp32s3/rtc_sleep.c`,
+`include/soc/rtc.h` and `soc/esp32s3/register/soc/rtc_cntl_reg.h`. STATE0.SLEEP_EN
+with DIG_PWC.DG_WRAP_PD_EN gates both CPU cores and digital peripheral clocks.
+The RTC clock continues. Enabled EXT1 (trigger bit1, selected RTC inputs with the
+programmed high/low polarity) or timer (trigger bit3, 48-bit deadline) requests
+reset cause5 and retains its wake-cause/status registers for normal SDK decoding.
+The browser ABI observes that state; it cannot force a sleep transition. Other
+chips report unsupported through that ABI. C3 deep-sleep GPIO wake, light sleep,
+ULP execution, RTC memory power-down selection and analog energy are unqualified.
+
+Digital SRAM/PSRAM contents are discarded on this deep-sleep reset. RTC memories,
+flash, the external board/panel and SD card remain separate custody. Resetting the
+SDMMC controller must retain its attached card and writes, for ordinary software
+resets as well as deep sleep. Register-level tests exercise inactive/unselected
+wake inputs, timer wake, stopped instructions/digital timer, RTC progress and
+volatile versus persistent memory after reboot. Firmware-level source-bound
+sleep/download-resume acceptance is a separate requirement.
+
+This implements a register-driven power state at scheduling boundaries. It does
+not skip firmware polling loops or introduce function stubs (the rejected EX007
+shortcut remains rejected). Sleep-entry/wake latencies, oscillator accuracy,
+retention-domain voltages, optical panel behavior and energy need hardware
+calibration; functional wake behavior is not cycle-accurate power qualification.

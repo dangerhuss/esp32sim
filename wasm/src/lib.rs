@@ -314,6 +314,19 @@ pub unsafe extern "C" fn esp32sim_run(e: *mut Emu, cycles: u32, unix_ms: f64) ->
     e.m.run_slice(cycles)
 }
 
+/// Observe register-driven deep sleep: 0 awake, 1 asleep, 2 unsupported.
+/// This does not force a power transition or replace a guest operation.
+///
+/// # Safety
+/// `e` must point to a live emulator to which the caller has exclusive access.
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_deep_sleep_state(e: *mut Emu) -> u32 {
+    // SAFETY: The caller provides exclusive access to a live emulator.
+    match unsafe { &mut *e }.m.bus().deep_sleep_state() {
+        Some(false) => 0, Some(true) => 1, None => 2,
+    }
+}
+
 /// The emulated CPU clock, so the driver paces the right chip: 240 MHz on the S3, 160 on the C3.
 ///
 /// # Safety

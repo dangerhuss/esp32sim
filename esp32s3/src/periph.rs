@@ -614,6 +614,16 @@ impl Peripherals {
     /// Advance device time by `cycles` CPU cycles (every clocked device gets its own clock's
     /// ticks), then route GPIO input edges to the pulse counters.
     pub fn tick(&mut self, cycles: u64) -> bool {
+        if self.rtc.sleeping {
+            // Consume divider fractions for every domain but clock only RTC.
+            // Digital timers/DMA/radio cannot execute while their supply is off.
+            let rtc = &mut self.rtc;
+            self.clock.advance(&Self::CLOCKS, cycles, |domain, ticks| {
+                if domain == ClockDomain::RtcSlow { Device::tick(rtc, ticks); }
+            });
+            self.rtc.check_wakeup(self.gpio.input);
+            return self.rtc.sw_reset;
+        }
         let mut irq_changed = Dispatch::tick(self, cycles);
         if !self.gpio.input_changes.is_empty() {
             let before = self.pcnt.irq();

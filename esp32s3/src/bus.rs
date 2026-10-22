@@ -798,8 +798,12 @@ impl SocBus {
     /// Refresh the cached deadline after host-side device configuration changes.
     /// Pending elapsed cycles are retained and count toward the new threshold.
     pub fn refresh_tick_budget(&mut self) {
-        let cap = if self.cadence_active() { MAX_TICK_DEFER } else { QUIET_TICK_DEFER };
-        let mut budget = self.periph.cycles_until_timer().clamp(1, cap);
+        let cap = if self.periph.rtc.sleeping { 240_000 } else if self.cadence_active() { MAX_TICK_DEFER } else { QUIET_TICK_DEFER };
+        let mut budget = if self.periph.rtc.sleeping {
+            self.periph.rtc.sleep_deadline_ticks().map_or(cap, |ticks| {
+                ticks.saturating_mul(1600).saturating_sub(self.periph.clock_cycles() % 1600).clamp(1, u64::from(cap)) as u32
+            })
+        } else { self.periph.cycles_until_timer().clamp(1, cap) };
         if let Some((deadline, _)) = &self.spi2_scheduled {
             let until = u64::from(self.tick_pending).saturating_add(deadline.saturating_sub(self.cycles));
             budget = budget.min(until.clamp(1, u64::from(MAX_TICK_DEFER)) as u32);
@@ -839,6 +843,11 @@ impl SocBus {
             }
         }
         if self.board_edges { self.irq_dirty |= esp_soc::gpio::drain_board_inputs(&mut *self.board, &mut self.periph.gpio, &mut self.gpio_events, self.cycles); }
+        if self.periph.rtc.sleeping || (self.periph.rtc.sw_reset && self.periph.rtc.reset_cause == 5) {
+            self.periph.rtc.check_wakeup(self.periph.gpio.input);
+            self.irq_dirty |= self.periph.rtc.sw_reset;
+            return u32::from(self.irq_dirty);
+        }
         self.complete_spi2_dma();
         self.deliver_spi2_transfer();
         self.dma_i2s_step(cycles as u64);
