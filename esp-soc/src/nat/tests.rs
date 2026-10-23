@@ -340,6 +340,28 @@ fn inbound_tuple_custody_and_reset_do_not_disturb_outbound_flows() {
     let mut outbound=flow();outbound.transport=Transport::TimeWait;nat.tcp.push(outbound);
     assert_eq!(nat.inbound_count(),1);
     nat.disconnect_inbound();assert_eq!(nat.tcp.len(),1);assert!(!nat.tcp[0].host_initiated);
-    for port in 1..=MAX_FLOWS {let(socket,_peer)=socket_pair();let accepted=nat.accept_inbound(target,port as u16,socket,1);assert_eq!(accepted.is_some(),port<MAX_FLOWS);}
+    // The finished outbound entry may be retired, but no live inbound entry is.
+    for port in 1..=MAX_FLOWS {let(socket,_peer)=socket_pair();assert!(nat.accept_inbound(target,port as u16,socket,1).is_some());}
     assert_eq!(nat.tcp.len(),MAX_FLOWS);
+    let(socket,_peer)=socket_pair();assert!(nat.accept_inbound(target,1000,socket,2).is_none());
+    assert_eq!(nat.inbound_count(),MAX_FLOWS);
+}
+
+#[test]
+fn inbound_finished_slots_retire_without_unbounding_live_custody() {
+    let target=InboundTarget{mac:[2;6],ip:[10,0,2,15],port:80};
+    let mut nat=Nat::new(false);
+    // More than two whole tables of short completed clients. Keep one live
+    // stream throughout; it cannot be selected for finished-slot retirement.
+    let(socket,_live_peer)=socket_pair();assert!(nat.accept_inbound(target,49152,socket,0).is_some());
+    for port in 1..=MAX_FLOWS*3 {
+        let(socket,_peer)=socket_pair();assert!(nat.accept_inbound(target,port as u16,socket,port as u64).is_some());
+        assert!(nat.tcp.len()<=MAX_FLOWS);
+        let completed=nat.tcp.last_mut().unwrap();assert_eq!(completed.dst_port,port as u16);
+        completed.transport=Transport::TimeWait;
+        assert_eq!(nat.inbound_count(),1);
+        assert!(nat.tcp.iter().any(|c| c.dst_port==49152&&matches!(c.transport,Transport::Connected(_))));
+        // A remembered tuple is still not eligible for immediate reuse.
+        let(duplicate,_peer)=socket_pair();assert!(nat.accept_inbound(target,port as u16,duplicate,port as u64).is_none());
+    }
 }

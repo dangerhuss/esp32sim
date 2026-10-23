@@ -236,11 +236,19 @@ impl Nat {
     pub fn accept_inbound(&mut self, target: InboundTarget, peer_port: u16,
                           sock: TcpStream, now_us: u64) -> Option<Vec<u8>> {
         let peer_ip = [10, 0, 2, 2];
-        if self.tcp.len() >= MAX_FLOWS || peer_port == 0 || target.port == 0
+        if peer_port == 0 || target.port == 0
             || self.tcp.iter().any(|c| c.guest_ip == target.ip && c.guest_port == target.port
                 && c.dst_ip == peer_ip && c.dst_port == peer_port) { return None; }
+        // Match outbound admission: finished tuples occupy only spare slots.
+        // A stream of ordinary short HTTP connections must not exhaust the
+        // table while every connection is already in TIME_WAIT. Never evict
+        // live custody or admit a colliding remembered tuple.
+        let evict = if self.tcp.len() >= MAX_FLOWS {
+            Some(self.tcp.iter().position(|c| matches!(c.transport, Transport::TimeWait | Transport::Closed))?)
+        } else { None };
         sock.set_nonblocking(true).ok()?;
         sock.set_nodelay(true).ok()?;
+        if let Some(i) = evict { self.tcp.remove(i); }
         self.isn = self.isn.wrapping_add(0x10000);
         let mut flow = Tcp { host_initiated: true, guest_mac: target.mac, guest_ip: target.ip,
             guest_port: target.port, dst_ip: peer_ip, dst_port: peer_port,
