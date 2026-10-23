@@ -24,8 +24,13 @@ accelerator, SHA over GDMA (including SHA-384) and AES-CTR — see docs/peripher
 
 ## Not there yet
 
-- **Inbound**: no port forwarding, so a server in the guest (autopling's web UI) is not reachable
-  from the Mac. A `hostfwd=tcp:127.0.0.1:8080-:80` option over the same NAT is the natural next step.
+- **Inbound**: the optional `esp-soc` example relay now supports
+  `ethernet_stdio --forward 18080 80`, binding only127.0.0.1 and bridging opaque
+  TCP bytes through real Ethernet/Wi-Fi into the guest's normal SDK listener.
+  It reuses NAT's bounded flow/window/retransmission/FIN custody, admits at most
+  four live inbound flows and resets those flows on fresh guest DHCP discovery.
+  Without the explicit option the existing outbound-only invocation is unchanged.
+  This does not add a general CLI `hostfwd` option or real LAN/mDNS presence.
 - **Multicast/mDNS**: not carried, so `esp-web.local` and Home Assistant discovery do not resolve;
   use IP addresses.
 - **Real LAN presence**: a `--net tap`/vmnet backend would give the guest an address on the real
