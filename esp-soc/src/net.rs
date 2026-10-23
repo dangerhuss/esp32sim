@@ -156,6 +156,7 @@ impl VirtualNet {
             if opt == 53 && len == 1 { msg_type = d[i + 2]; }
             i += 2 + len;
         }
+        if msg_type == 1 { if let Some(nat) = &mut self.nat { nat.disconnect_inbound(); } }
         let reply_type = match msg_type { 1 => 2, 3 => 5, _ => return Vec::new() };   // DISCOVER->OFFER, REQUEST->ACK
 
         let mut b = vec![0u8; 240];

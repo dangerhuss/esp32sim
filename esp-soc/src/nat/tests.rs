@@ -20,7 +20,7 @@ fn disconnect_tcp_closes_host_stream_but_preserves_udp_and_resolver() {
 }
 
 fn flow() -> Tcp {
-    Tcp { guest_mac: [2; 6], guest_ip: [10, 0, 2, 15], guest_port: 1234,
+    Tcp { host_initiated: false, guest_mac: [2; 6], guest_ip: [10, 0, 2, 15], guest_port: 1234,
         dst_ip: [127, 0, 0, 1], dst_port: 80, transport: Transport::Closed,
         guest_write: GuestWrite::Open, host_closed: false,
         our_seq: 100, guest_seq: 200, guest_window: WINDOW,
@@ -291,4 +291,55 @@ fn udp_ignores_other_senders_and_preserves_dns_reply_address() {
     assert_eq!(frames.len(), 1);
     assert_eq!(&frames[0][26..30], &[10, 0, 2, 3]);
     assert_eq!(&frames[0][42..], b"answer");
+}
+
+
+fn inbound_segment(seq: u32, ack: u32, flags: u8, data: &[u8]) -> Vec<u8> {
+    let mut seg = segment(seq, ack, flags, data);
+    seg[..2].copy_from_slice(&80_u16.to_be_bytes());
+    seg[2..4].copy_from_slice(&49152_u16.to_be_bytes());
+    seg
+}
+
+#[test]
+fn inbound_real_guest_handshake_transfers_opaque_bytes_and_half_closes() {
+    let (socket, mut peer) = socket_pair();
+    let mut nat = Nat::new(false);
+    let target = InboundTarget { mac: [2; 6], ip: [10, 0, 2, 15], port: 80 };
+    let syn = nat.accept_inbound(target, 49152, socket, 0).unwrap();
+    assert_eq!(syn[47], SYN);
+    let our = u32::from_be_bytes(syn[38..42].try_into().unwrap()) + 1;
+    peer.write_all(b"opaque TLS or HTTP bytes").unwrap();
+    assert!(nat.poll(1).is_empty(), "host data must wait for guest SYN/ACK");
+    // An ordinary ACK or incorrect SYN/ACK cannot unlock the connection.
+    assert!(nat.tcp_in(&target.mac, &target.ip, &[10,0,2,2], &inbound_segment(200, our, ACK, &[]), 2).is_empty());
+    assert!(nat.tcp_in(&target.mac, &target.ip, &[10,0,2,2], &inbound_segment(200, our+1, SYN|ACK, &[]), 3).is_empty());
+    assert!(nat.tcp[0].handshake_pending());
+    let reply = nat.tcp_in(&target.mac, &target.ip, &[10,0,2,2], &inbound_segment(200, our, SYN|ACK, &[]), 4);
+    assert_eq!(reply.len(),1);
+    assert_eq!(reply[0][47],ACK);
+    assert_eq!(nat.tcp[0].guest_seq,201);
+    let data = poll_ready(&mut nat,5);
+    assert_eq!(&data[0][54..],b"opaque TLS or HTTP bytes");
+    let duplicate = nat.tcp_in(&target.mac,&target.ip,&[10,0,2,2],&inbound_segment(200,our,SYN|ACK,&[]),6);
+    assert_eq!(duplicate[0][47],ACK);
+    let next=nat.tcp[0].our_seq;
+    nat.tcp_in(&target.mac,&target.ip,&[10,0,2,2],&inbound_segment(201,next,ACK|FIN,b"response"),7);
+    nat.poll(8);
+    let mut response=[0;8];peer.read_exact(&mut response).unwrap();assert_eq!(&response,b"response");
+    let mut eof=[0];assert_eq!(peer.read(&mut eof).unwrap(),0);
+    assert_eq!(nat.tcp[0].to_host.len(),0);
+}
+
+#[test]
+fn inbound_tuple_custody_and_reset_do_not_disturb_outbound_flows() {
+    let target=InboundTarget{mac:[2;6],ip:[10,0,2,15],port:80};
+    let mut nat=Nat::new(false);
+    let (socket,_peer)=socket_pair();assert!(nat.accept_inbound(target,49152,socket,0).is_some());
+    let (duplicate,_peer)=socket_pair();assert!(nat.accept_inbound(target,49152,duplicate,0).is_none());
+    let mut outbound=flow();outbound.transport=Transport::TimeWait;nat.tcp.push(outbound);
+    assert_eq!(nat.inbound_count(),1);
+    nat.disconnect_inbound();assert_eq!(nat.tcp.len(),1);assert!(!nat.tcp[0].host_initiated);
+    for port in 1..=MAX_FLOWS {let(socket,_peer)=socket_pair();let accepted=nat.accept_inbound(target,port as u16,socket,1);assert_eq!(accepted.is_some(),port<MAX_FLOWS);}
+    assert_eq!(nat.tcp.len(),MAX_FLOWS);
 }

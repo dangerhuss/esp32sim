@@ -68,6 +68,7 @@ impl Sent {
 }
 
 struct Tcp {
+    host_initiated: bool,
     guest_mac: [u8; 6], guest_ip: [u8; 4], guest_port: u16, dst_ip: [u8; 4], dst_port: u16,
     transport: Transport,
     guest_write: GuestWrite,
@@ -170,6 +171,9 @@ struct Udp {
     last_activity_us: u64,
 }
 
+#[derive(Clone, Copy)]
+pub struct InboundTarget { pub mac: [u8; 6], pub ip: [u8; 4], pub port: u16 }
+
 pub struct Nat {
     tcp: Vec<Tcp>,
     udp: Vec<Udp>,
@@ -225,6 +229,38 @@ impl Nat {
         }
     }
 
+    /// Attach an accepted host socket to the existing bounded TCP machinery.
+    /// The generated SYN is delivered to the real guest listener; application
+    /// protocols (including TLS) remain opaque. The caller selects a fresh
+    /// virtual peer port and preserves TIME_WAIT tuples across reuse.
+    pub fn accept_inbound(&mut self, target: InboundTarget, peer_port: u16,
+                          sock: TcpStream, now_us: u64) -> Option<Vec<u8>> {
+        let peer_ip = [10, 0, 2, 2];
+        if self.tcp.len() >= MAX_FLOWS || peer_port == 0 || target.port == 0
+            || self.tcp.iter().any(|c| c.guest_ip == target.ip && c.guest_port == target.port
+                && c.dst_ip == peer_ip && c.dst_port == peer_port) { return None; }
+        sock.set_nonblocking(true).ok()?;
+        sock.set_nodelay(true).ok()?;
+        self.isn = self.isn.wrapping_add(0x10000);
+        let mut flow = Tcp { host_initiated: true, guest_mac: target.mac, guest_ip: target.ip,
+            guest_port: target.port, dst_ip: peer_ip, dst_port: peer_port,
+            transport: Transport::Connected(sock), guest_write: GuestWrite::Open, host_closed: false,
+            our_seq: self.isn, guest_seq: 0, guest_window: WINDOW,
+            to_host: VecDeque::new(), unacked: VecDeque::new(), last_activity_us: now_us };
+        let syn = flow.send(SYN, Vec::new(), now_us);
+        self.tcp.push(flow);
+        self.tcp_opened += 1;
+        Some(syn)
+    }
+
+    pub fn inbound_count(&self) -> usize {
+        self.tcp.iter().filter(|c| c.host_initiated && !matches!(c.transport, Transport::Closed | Transport::TimeWait)).count()
+    }
+
+    /// A fresh guest DHCP discovery is a new socket epoch, not permission to
+    /// deliver buffered bytes from a host client attached before the reboot.
+    pub fn disconnect_inbound(&mut self) { self.tcp.retain(|c| !c.host_initiated); }
+
     pub fn tcp_in(&mut self, gmac: &[u8; 6], gip: &[u8; 4], dip: &[u8; 4], seg: &[u8], now_us: u64) -> Vec<Vec<u8>> {
         self.tcp_in_with_connect(gmac, gip, dip, seg, now_us, connect)
     }
@@ -252,7 +288,7 @@ impl Nat {
             let Some(pending) = connector(address(dip, dport)) else { return Vec::new() };
             if let Some(i) = evict { self.tcp.remove(i); }
             self.isn = self.isn.wrapping_add(0x10000);
-            self.tcp.push(Tcp { guest_mac: *gmac, guest_ip: *gip, guest_port: sport, dst_ip: *dip, dst_port: dport,
+            self.tcp.push(Tcp { host_initiated: false, guest_mac: *gmac, guest_ip: *gip, guest_port: sport, dst_ip: *dip, dst_port: dport,
                 transport: Transport::Connecting(pending), guest_write: GuestWrite::Open, host_closed: false,
                 our_seq: self.isn, guest_seq: seq.wrapping_add(1), guest_window: window,
                 to_host: VecDeque::new(), unacked: VecDeque::new(), last_activity_us: now_us });
@@ -267,9 +303,20 @@ impl Nat {
             return if flags & FIN != 0 { vec![c.segment(ACK, &[], c.our_seq)] } else { Vec::new() };
         }
         if flags & SYN != 0 {
+            if c.host_initiated {
+                if flags & ACK == 0 || !data.is_empty() { return Vec::new(); }
+                if c.handshake_pending() {
+                    if ack != c.our_seq { return Vec::new(); }
+                    c.guest_seq = seq.wrapping_add(1); c.acknowledge(ack);
+                }
+                if c.guest_seq != seq.wrapping_add(1) { return Vec::new(); }
+                c.guest_window = window;
+                return vec![c.segment(ACK, &[], c.our_seq)];
+            }
             return if c.handshake_pending() { vec![c.segment(SYN | ACK, &[], c.unacked[0].seq)] } else { Vec::new() };
         }
         if !matches!(c.transport, Transport::Connected(_)) { return Vec::new(); }
+        if c.host_initiated && c.handshake_pending() { return Vec::new(); }
         if flags & ACK != 0 { c.acknowledge(ack); c.guest_window = window; }
         if c.handshake_pending() { return Vec::new(); }
         if !data.is_empty() || flags & FIN != 0 {
