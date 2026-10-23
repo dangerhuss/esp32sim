@@ -352,6 +352,26 @@ pub unsafe extern "C" fn esp32sim_deep_sleep_state(e: *mut Emu) -> u32 {
     unsafe { &*e }.m.insns()
 }
 
+/// Snapshot the existing GPIO-matrix PWM model: field 0 is frequency in Hz,
+/// field 1 is the high-time fraction scaled to 0..65535. Returns -1 when the
+/// pin/field is invalid or PWM is unsupported, disabled, unrouted or paused.
+/// Unavailable PWM does not establish a low GPIO. No execution is advanced.
+///
+/// # Safety
+/// `e` must point to a live emulator with exclusive access for this call.
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_pwm_snapshot(e: *mut Emu, pin: u32, field: u32) -> f64 {
+    let Ok(pin) = u8::try_from(pin) else { return -1.0; };
+    if field > 1 { return -1.0; }
+    // SAFETY: the caller provides exclusive access to the live emulator.
+    let e = unsafe { &mut *e };
+    match e.m.bus().pwm_output(pin) {
+        Some((frequency, duty)) => if field == 0 { frequency } else { f64::from(duty) },
+        None => -1.0,
+    }
+}
+
+
 #[cfg(target_arch = "wasm32")]
 #[cfg(feature = "cpu-profile")]
 #[no_mangle] pub extern "C" fn esp32sim_kernel_census(i: u32) -> f64 { xtensa_lx7::jit::CENSUS.get(i as usize).map_or(0.0, |n| n.load(std::sync::atomic::Ordering::Relaxed) as f64) }
@@ -476,4 +496,42 @@ pub extern "C" fn esp32sim_test_gpio_waveform() -> u32 {
     std::panic::set_hook(Box::new(|info| log(&format!("[waveform test] {info}"))));
     gpio_waveform_tests::run();
     24
+}
+
+#[cfg(test)]
+mod pwm_snapshot_tests {
+    use super::*;
+    #[test]
+    fn pwm_snapshot_reports_actual_model_and_preserves_unknown_and_time() {
+        for board in ["atech14", "esp32c3"] {
+            // SAFETY: board is readable and this test owns the returned handle.
+            let handle = unsafe { esp32sim_new(board.as_ptr(), board.len(), 16, 8) };
+            assert!(!handle.is_null());
+            // SAFETY: all calls exclusively borrow this live owned handle.
+            unsafe {
+                assert_eq!(esp32sim_pwm_snapshot(handle, 8, 0), -1.0);
+                assert_eq!(esp32sim_pwm_snapshot(handle, 256, 0), -1.0);
+                assert_eq!(esp32sim_pwm_snapshot(handle, 8, 2), -1.0);
+                let before = esp32sim_cycles(handle);
+                if let Some(m) = (&mut *handle).m.s3_mut() {
+                    // Existing S3 PWM fixture: IDF5.5 ledc_reg.h/gpio_reg.h,
+                    // same register bindings as esp32s3/tests/pwm.rs.
+                    let p = &mut m.bus.periph;
+                    p.write32(0x600c0018, 1 << 11);
+                    p.write32(0x60004024, 1 << 4);
+                    p.write32(0x600190d0, 3);
+                    p.write32(0x600190a0, 8 | (256 << 4) | (1 << 25));
+                    p.write32(0x60019008, 64 << 4);
+                    p.write32(0x6001900c, 1 << 31);
+                    p.write32(0x60019000, 4 | (1 << 4));
+                    p.write32(0x60004564, 73);
+                    p.tick(10000);
+                    assert_eq!(esp32sim_pwm_snapshot(handle, 4, 0), 156250.0);
+                    assert_eq!(esp32sim_pwm_snapshot(handle, 4, 1), 16384.0);
+                }
+                assert_eq!(esp32sim_cycles(handle), before);
+                esp32sim_delete(handle);
+            }
+        }
+    }
 }
