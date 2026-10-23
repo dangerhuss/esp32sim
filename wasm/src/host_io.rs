@@ -17,6 +17,16 @@ pub unsafe extern "C" fn esp32sim_adc_raw(e:*mut Emu,pin:u32,raw:u32)->u32 {
     u32::from(!unsafe{&mut *e}.m.bus().adc_set_raw(pin as u8,raw as u16))
 }
 
+/// Raw capacitive Home-key level, below unchanged firmware. Returns1 for
+/// unsupported boards (including X3/C3) or nonboolean levels.
+/// # Safety
+/// `e` is an exclusively borrowed live emulator.
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_home_key(e:*mut Emu,down:u32)->u32 {
+    if down>1{return 1;}
+    u32::from(!unsafe{&mut *e}.m.bus().board().home_key(down!=0))
+}
+
 /// Attach a bounded, disposable SD image before boot, using the native model.
 /// Returns 1 for an unsupported chip, invalid image size or an already booted machine.
 ///
@@ -122,6 +132,20 @@ mod tests {
             m.bus.periph.adc.write(0x20,(1<<31)|(1<<29)|(1<<25));
             assert_eq!(m.bus.periph.adc.read(0x2c),1000);
             esp32sim_delete(e);
+        }
+    }
+
+    #[test]
+    fn home_input_reaches_x4_gt911_register_and_refuses_x3() {
+        unsafe {
+            let e=esp32sim_new(b"x4pro".as_ptr(),5,16,8);
+            assert!(!e.is_null());assert_eq!(esp32sim_home_key(e,1),0);
+            let mut devices=(*e).m.bus().board().i2c_devices();
+            let gt=&mut devices[0].2;assert!(gt.start(false));assert!(gt.write(0x81));assert!(gt.write(0x4e));assert!(gt.start(true));assert_eq!(gt.read(),0x90);
+            assert_eq!(esp32sim_home_key(e,2),1);assert_eq!(esp32sim_home_key(e,0),0);
+            assert!(gt.start(false));gt.write(0x81);gt.write(0x4e);gt.start(true);assert_eq!(gt.read(),0x80);
+            esp32sim_delete(e);
+            let c3=esp32sim_new(b"esp32c3".as_ptr(),7,16,0);assert_eq!(esp32sim_home_key(c3,1),1);esp32sim_delete(c3);
         }
     }
 

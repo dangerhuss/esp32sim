@@ -231,6 +231,7 @@ impl BoardModel for X4Pro {
     fn touch(&mut self, x: u16, y: u16, down: bool) {
         self.touch.lock().unwrap().update(x, y, down);
     }
+    fn home_key(&mut self, down: bool) -> bool {self.touch.lock().unwrap().home=down;true}
     fn input_levels(&self) -> Vec<(u8, bool)> {
         vec![
             (0, true),

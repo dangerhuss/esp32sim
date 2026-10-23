@@ -103,7 +103,7 @@ impl I2cDevice for Tca9554 {
 
 /// Touch state shared between a board (UI) and its touch controller.
 #[derive(Default, Debug, Clone, Copy)]
-pub struct TouchState { pub down: bool, pub x: u16, pub y: u16, pub seen: bool, pub release_pending: bool }
+pub struct TouchState { pub home: bool, pub down: bool, pub x: u16, pub y: u16, pub seen: bool, pub release_pending: bool }
 impl TouchState {
     pub fn update(&mut self, x: u16, y: u16, down: bool) {
         self.x = x; self.y = y;
@@ -132,7 +132,8 @@ impl Gt911 {
             0x8047 => 0x41,                                                                                     // config version
             0x8048 => self.w as u8, 0x8049 => (self.w >> 8) as u8, 0x804a => self.h as u8, 0x804b => (self.h >> 8) as u8,
             0x804c => 5,                                                                                        // touch number
-            0x814e => 0x80 | t.down as u8,                                                                      // buffer ready + count
+            // FreeInk SDK69937018 InputManager.cpp2273: GT911 capacitive Home is status0x10.
+            0x814e => 0x80 | (u8::from(t.home) << 4) | t.down as u8,                                                                      // buffer ready + count
             0x814f => 0, 0x8150 => t.x as u8, 0x8151 => (t.x >> 8) as u8, 0x8152 => t.y as u8, 0x8153 => (t.y >> 8) as u8, 0x8154 => 20, 0x8155 => 0, 0x8156 => 0,
             _ => 0,
         }
@@ -390,5 +391,23 @@ mod qmi8658_tests {
         at(&mut imu, 12.0002, 0x35, 12);
         assert_eq!(at(&mut imu, 12.0003, 0x2e, 1), [0x00]);
         assert_eq!(at(&mut imu, 12.0041, 0x2e, 1), [0x03]);
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+    #[test]
+    fn gt911_home_bit_is_independent_of_screen_contact_and_coordinates() {
+        let touch=std::sync::Arc::new(std::sync::Mutex::new(TouchState::default()));
+        let gt=Gt911::new(touch.clone(),480,800);
+        assert_eq!(gt.reg(0x814e),0x80);
+        {let mut t=touch.lock().unwrap();t.home=true;t.update(479,799,true);}
+        assert_eq!(gt.reg(0x814e),0x91);
+        assert_eq!((gt.reg(0x8150),gt.reg(0x8151),gt.reg(0x8152),gt.reg(0x8153)),(0xdf,1,0x1f,3));
+        touch.lock().unwrap().home=false;assert_eq!(gt.reg(0x814e),0x81);
+        {let mut t=touch.lock().unwrap();t.update(479,799,false);t.home=true;}
+        assert_eq!(gt.reg(0x814e),0x90);
+        touch.lock().unwrap().home=false;assert_eq!(gt.reg(0x814e),0x80);
     }
 }
