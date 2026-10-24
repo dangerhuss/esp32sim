@@ -143,6 +143,8 @@ mod tests {
             let mut devices=(*e).m.bus().board().i2c_devices();
             let gt=&mut devices[0].2;assert!(gt.start(false));assert!(gt.write(0x81));assert!(gt.write(0x4e));assert!(gt.start(true));assert_eq!(gt.read(),0x90);
             assert_eq!(esp32sim_home_key(e,2),1);assert_eq!(esp32sim_home_key(e,0),0);
+            assert!(gt.start(false));gt.write(0x81);gt.write(0x4e);gt.start(true);assert_eq!(gt.read(),0x90); // unread Home remains latched
+            assert!(gt.start(false));gt.write(0x81);gt.write(0x4e);gt.write(0); // actual host ACK
             assert!(gt.start(false));gt.write(0x81);gt.write(0x4e);gt.start(true);assert_eq!(gt.read(),0x80);
             esp32sim_delete(e);
             let c3=esp32sim_new(b"esp32c3".as_ptr(),7,16,0);assert_eq!(esp32sim_home_key(c3,1),1);esp32sim_delete(c3);

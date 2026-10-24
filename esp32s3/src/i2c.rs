@@ -155,7 +155,16 @@ impl Gt911Reports {
 /// config at 0x8047.., status + up to 5 points at 0x814E...
 pub struct Gt911 { addr: u16, phase: u8, touch: std::sync::Arc<std::sync::Mutex<TouchState>>, pub reads: u64, w: u16, h: u16 }
 impl Gt911 {
-    pub fn new(touch: std::sync::Arc<std::sync::Mutex<TouchState>>, w: u16, h: u16) -> Self { touch.lock().unwrap().gt911 = Some(Gt911Reports::default()); Gt911 { addr: 0, phase: 0, touch, reads: 0, w, h } }
+    pub fn new(touch: std::sync::Arc<std::sync::Mutex<TouchState>>, w: u16, h: u16) -> Self {
+        {
+            let mut state = touch.lock().unwrap();
+            if state.gt911.is_none() {
+                let ready = (state.down || state.home).then_some(Gt911Report { down: state.down, home: state.home, x: state.x, y: state.y });
+                state.gt911 = Some(Gt911Reports { ready, ..Default::default() });
+            }
+        }
+        Gt911 { addr: 0, phase: 0, touch, reads: 0, w, h }
+    }
     fn reg(&self, a: u16) -> u8 {
         // GOODIX GT911 Programming Guide Rev.10 (2017-07-26), section5 p28:
         // unread ready coordinates remain unchanged until host clears814e.
