@@ -308,6 +308,24 @@ pub unsafe extern "C" fn esp32sim_reports(e: *mut Emu) {
     if let Some(w) = e.m.web() { for line in r.lines() { w.send_text(&format!("{{\"t\":\"emu\",\"msg\":\"{}\"}}", json_escape(line))); } }
 }
 
+/// Queue the X4 controller's existing model report without changing guest state.
+/// Returns 0 when queued, 1 for null/unsupported boards or an unavailable outbox.
+/// This is a model observation, not firmware telemetry or physical panel evidence.
+///
+/// # Safety
+/// A non-null `e` must point to a live emulator exclusively owned by the caller.
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_board_report(e: *mut Emu) -> u32 {
+    // SAFETY: The caller exclusively owns a live emulator; null is rejected.
+    let Some(e) = (unsafe { e.as_mut() }) else { return 1 };
+    let Some(m) = e.m.s3_mut() else { return 1 };
+    if !matches!(m.bus.board.name(), "x4pro" | "x4pro-delayed-busy") { return 1; }
+    let report = m.bus.board.report();
+    let Some(web) = m.web.as_ref() else { return 1 };
+    web.send_text(&format!("{{\"t\":\"emu\",\"msg\":\"{}\"}}", json_escape(&report)));
+    0
+}
+
 /// Start from the mask ROM (the normal path) or, with `app_direct` set, straight into the app image.
 ///
 /// # Safety
@@ -564,6 +582,43 @@ mod pwm_snapshot_tests {
 #[cfg(test)]
 mod factory_mac_tests {
     use super::*;
+    #[test]
+    fn board_report_is_actual_read_only_x4_outbox_observation() {
+        // SAFETY: The test owns each returned emulator and its outbox.
+        unsafe {
+            assert_eq!(esp32sim_board_report(std::ptr::null_mut()), 1);
+            for name in ["x4pro", "x4pro-delayed-busy", "esp32c3", "none"] {
+                let e = esp32sim_new(name.as_ptr(), name.len(), 16, 8);
+                let expected = name.starts_with("x4pro");
+                assert_eq!(esp32sim_board_report(e), u32::from(!expected));
+                let count = esp32sim_out_take(e);
+                assert_eq!(count, u32::from(expected));
+                if expected {
+                    let bytes = std::slice::from_raw_parts(esp32sim_out_ptr(e, 0), esp32sim_out_len(e, 0));
+                    let line = std::str::from_utf8(bytes).unwrap();
+                    assert!(line.contains("protocol_faults=0"));
+                    assert_eq!(line.contains("scenario_refresh_start_delay_us=2000"), name.ends_with("delayed-busy"));
+                    assert_eq!((*e).m.s3_mut().unwrap().bus.board.display_frames(), 0);
+                }
+                esp32sim_delete(e);
+            }
+        }
+    }
+    #[test]
+    fn delayed_busy_alias_uses_actual_s3_constructor_without_changing_default() {
+        for name in ["x4pro", "x4pro-delayed-busy"] {
+            // SAFETY: The test owns the constructor input and returned emulator.
+            unsafe {
+                let e = esp32sim_new(name.as_ptr(), name.len(), 16, 8);
+                assert!(!e.is_null());
+                assert_eq!((*e).m.board_name(), name);
+                assert!((*e).m.s3_mut().is_some());
+                let explicit = [0x02, 0x57, 0x41, 0x53, 0, 4];
+                assert_eq!(esp32sim_set_factory_mac(e, explicit.as_ptr(), 6), 0);
+                esp32sim_delete(e);
+            }
+        }
+    }
     #[test]
     fn explicit_s3_factory_identity_is_preboot_atomic_and_reset_stable() {
         let board = b"x4pro";

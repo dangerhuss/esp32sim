@@ -25,6 +25,8 @@ pub use waveshare_lcd4b::*;
 pub fn make_board(name: &str) -> Option<Board> {
     match name {
         "x4pro" => Some(Box::new(x4pro::X4Pro::new())),
+        // Explicit timing counterexample; not the normal board or silicon calibration.
+        "x4pro-delayed-busy" => Some(Box::new(x4pro::X4Pro::with_refresh_start_delay_us(2_000)?)),
         "atech14" | "atech" => Some(Box::new(Atech14::new())),
         "none" | "bare" => Some(Box::new(NoBoard)),
         "waveshare-cam" | "waveshare" => Some(Box::new(WaveshareCam::new())),
