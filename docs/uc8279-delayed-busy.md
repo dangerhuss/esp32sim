@@ -26,3 +26,9 @@ fixture's emulator.wasm selects this module. There is no existing config board k
 The comparison uses the same module and original `x4pro` constructor. Root operators
 perform manual MCU-WASM interaction; this scenario provides no UI driver or firmware
 telemetry and makes no physical-cause or hardware qualification claim.
+
+`esp32sim_board_report(handle)` queues the existing X4 board report as one `emu`
+outbox message and returns 0; null/non-X4 handles return 1 without a message.
+This read-only export does not advance the guest. The observer-only
+`esp32sim_reports` export does not include this controller report. A private worker
+may project only the anchored numeric X4 fields; raw general reports are unnecessary.
