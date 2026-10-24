@@ -160,7 +160,12 @@ impl Gt911 {
             let mut state = touch.lock().unwrap();
             if state.gt911.is_none() {
                 let ready = (state.down || state.home).then_some(Gt911Report { down: state.down, home: state.home, x: state.x, y: state.y });
-                state.gt911 = Some(Gt911Reports { ready, ..Default::default() });
+                let latest = state.release_pending.then_some(Gt911Report { down: false, home: state.home, x: state.x, y: state.y });
+                // Migrate a generic unread short press without losing its release.
+                // The physical latest state is already UP, even while ready is DOWN.
+                if state.release_pending { state.down = false; }
+                state.seen = false; state.release_pending = false;
+                state.gt911 = Some(Gt911Reports { ready, latest, ..Default::default() });
             }
         }
         Gt911 { addr: 0, phase: 0, touch, reads: 0, w, h }
@@ -496,4 +501,18 @@ mod home_tests {
         write(&mut gt,0x814e,0);assert_eq!(packet(&mut gt)[0],0);
         touch.lock().unwrap().set_home(true);assert_eq!(packet(&mut gt)[0],0x90);
     }
+    #[test]
+    fn attachment_migrates_generic_unread_short_press_and_its_release() {
+        let touch=std::sync::Arc::new(std::sync::Mutex::new(TouchState::default()));
+        {let mut t=touch.lock().unwrap();t.update(12,34,true);t.update(12,34,false);assert!(t.release_pending);}
+        let mut gt=Gt911::new(touch.clone(),480,800);
+        assert_eq!(point(packet(&mut gt)),(0x81,12,34));
+        // Attaching another handle must not reset ready or pending custody.
+        let mut other=Gt911::new(touch.clone(),480,800);
+        assert_eq!(point(packet(&mut other)),(0x81,12,34));
+        write(&mut gt,0x814e,0);assert_eq!(point(packet(&mut other)),(0x80,12,34));
+        write(&mut other,0x814e,0);assert_eq!(packet(&mut gt)[0],0);
+        touch.lock().unwrap().set_home(true);assert_eq!(packet(&mut gt)[0],0x90);
+    }
+
 }
