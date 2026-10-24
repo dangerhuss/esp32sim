@@ -19,6 +19,8 @@ pub struct X4Pro {
     clock: u64,
     deadline: Option<u64>,
     refresh_pending: bool,
+    busy_start: Option<u64>,
+    refresh_start_delay_us: u32,
     powered: bool,
     partial: bool,
     window_data: [u8; 9],
@@ -50,6 +52,8 @@ impl X4Pro {
             clock: 0,
             deadline: None,
             refresh_pending: false,
+            busy_start: None,
+            refresh_start_delay_us: 0,
             powered: false,
             partial: false,
             window_data: [0; 9],
@@ -62,9 +66,21 @@ impl X4Pro {
             touch: Default::default(),
         }
     }
+    /// Explicit synthetic controller scenario, not a measured hardware delay.
+    /// The ordinary board keeps its existing immediate-assertion behavior.
+    pub fn with_refresh_start_delay_us(delay_us: u32) -> Option<Self> {
+        if delay_us > 50_000 { return None; }
+        let mut board = Self::new();
+        board.refresh_start_delay_us = delay_us;
+        Some(board)
+    }
     fn busy(&mut self, us: u64, refresh: bool) {
-        self.deadline = Some(self.clock.saturating_add(us * HZ / 1_000_000));
+        let delay = if refresh { u64::from(self.refresh_start_delay_us) * HZ / 1_000_000 } else { 0 };
+        let start = self.clock.saturating_add(delay);
+        self.deadline = Some(start.saturating_add(us * HZ / 1_000_000));
         self.refresh_pending = refresh;
+        self.busy_start = (delay != 0).then_some(start);
+        if delay != 0 { return; }
         self.edges.push(BoardEdge {
             cycle: self.clock,
             pin: 6,
@@ -173,7 +189,7 @@ impl X4Pro {
 }
 impl BoardModel for X4Pro {
     fn name(&self) -> &'static str {
-        "x4pro"
+        if self.refresh_start_delay_us == 0 { "x4pro" } else { "x4pro-delayed-busy" }
     }
     fn uses_spi_pins(&self) -> bool {
         true
@@ -196,6 +212,7 @@ impl BoardModel for X4Pro {
             self.partial = false;
             self.window = None;
             self.deadline = None;
+            self.busy_start = None;
             self.refresh_pending = false;
             self.edges.push(BoardEdge {
                 cycle,
@@ -242,15 +259,19 @@ impl BoardModel for X4Pro {
             (0, true),
             (7, true),
             (3, true),
-            (6, self.deadline.is_none()),
+            (6, self.deadline.is_none() || self.busy_start.is_some()),
             (21, false),
         ]
     }
     fn next_deadline(&self) -> Option<u64> {
-        self.deadline
+        self.busy_start.or(self.deadline)
     }
     fn advance_to(&mut self, cycle: u64) {
         self.clock = cycle;
+        if self.busy_start.is_some_and(|start| cycle >= start) {
+            let start = self.busy_start.take().unwrap();
+            self.edges.push(BoardEdge { cycle: start, pin: 6, level: false });
+        }
         if self.deadline.is_some_and(|deadline| cycle >= deadline) {
             if self.refresh_pending {
                 if self.partial {
@@ -306,6 +327,9 @@ impl BoardModel for X4Pro {
         }
     }
     fn report(&self) -> String {
+        if self.refresh_start_delay_us != 0 {
+            return format!("[x4pro] frames={} protocol_faults={} nominal_BUSY=true scenario_refresh_start_delay_us={} hardware_calibrated=false", self.frames, self.faults, self.refresh_start_delay_us);
+        }
         format!(
             "[x4pro] frames={} protocol_faults={} nominal_BUSY=true",
             self.frames, self.faults
@@ -445,6 +469,77 @@ mod tests {
         let mut b=configured();spi_command(&mut b,0x13);spi_data(&mut b,&[0]);spi_command(&mut b,0x12);
         let faults=b.faults;controller_reset(&mut b);spi_reinitialize(&mut b,false);spi_command(&mut b,0x12);
         assert_eq!(b.frames,0);assert!(b.deadline.is_none());assert!(b.faults>faults);
+    }
+
+    fn delayed_ready() -> X4Pro {
+        let mut b = X4Pro::with_refresh_start_delay_us(2_000).unwrap();
+        let mask = (1 << 1) | (1 << 13) | (1 << 14) | (1 << 18);
+        b.gpio_output_at(0, &[], mask, mask);
+        spi_reinitialize(&mut b, true);
+        b.take_edges();
+        b
+    }
+    #[test]
+    fn delayed_refresh_rejects_early_ptout_even_while_busy_is_high() {
+        let mut b = delayed_ready();
+        spi_command(&mut b, 0x12);
+        let start = b.next_deadline().unwrap();
+        assert_eq!(start, b.clock + HZ / 500);
+        assert!(b.input_levels().contains(&(6, true)));
+        assert_eq!(b.frames, 0);
+        spi_command(&mut b, 0x92);
+        assert_eq!(b.faults, 1, "accepted refresh owns controller before BUSY asserts");
+        assert!(b.current_invalid);
+    }
+    #[test]
+    fn delayed_refresh_orders_edges_and_publishes_only_at_finish() {
+        let mut b = delayed_ready();
+        spi_command(&mut b, 0x12);
+        let start = b.busy_start.unwrap();
+        let finish = b.deadline.unwrap();
+        b.advance_to(start - 1);
+        assert!(b.take_edges().is_empty());
+        assert!(b.input_levels().contains(&(6, true)));
+        b.advance_to(start);
+        let edges = b.take_edges();
+        assert_eq!((edges[0].cycle, edges[0].level), (start, false));
+        assert!(b.input_levels().contains(&(6, false)));
+        assert_eq!(b.frames, 0);
+        b.advance_to(finish);
+        assert_eq!(b.frames, 1);
+        spi_command(&mut b, 0x92);
+        spi_command(&mut b, 0x10);
+        assert_eq!(b.faults, 0);
+        let mut jumped = delayed_ready();
+        spi_command(&mut jumped, 0x12);
+        let start = jumped.busy_start.unwrap();
+        let finish = jumped.deadline.unwrap();
+        jumped.advance_to(finish + 1);
+        let edges = jumped.take_edges();
+        assert_eq!(edges.len(), 2);
+        assert_eq!((edges[0].cycle, edges[0].level), (start, false));
+        assert_eq!((edges[1].cycle, edges[1].level), (finish, true));
+    }
+    #[test]
+    fn reset_cancels_delayed_assertion_and_default_remains_immediate() {
+        let mut b = delayed_ready();
+        spi_command(&mut b, 0x12);
+        let finish = b.deadline.unwrap();
+        controller_reset(&mut b);
+        b.take_edges();
+        b.advance_to(finish + 1);
+        assert!(b.take_edges().is_empty());
+        assert_eq!(b.frames, 0);
+        assert!(b.deadline.is_none() && b.busy_start.is_none());
+        let mut ordinary = configured();
+        spi_reinitialize(&mut ordinary, true);
+        ordinary.take_edges();
+        spi_command(&mut ordinary, 0x12);
+        assert!(ordinary.busy_start.is_none());
+        assert!(ordinary.input_levels().contains(&(6, false)));
+        assert!(!ordinary.take_edges()[0].level);
+        assert_eq!(ordinary.name(), "x4pro");
+        assert!(X4Pro::with_refresh_start_delay_us(50_001).is_none());
     }
 
 }

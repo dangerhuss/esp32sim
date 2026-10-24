@@ -565,6 +565,21 @@ mod pwm_snapshot_tests {
 mod factory_mac_tests {
     use super::*;
     #[test]
+    fn delayed_busy_alias_uses_actual_s3_constructor_without_changing_default() {
+        for name in ["x4pro", "x4pro-delayed-busy"] {
+            // SAFETY: The test owns the constructor input and returned emulator.
+            unsafe {
+                let e = esp32sim_new(name.as_ptr(), name.len(), 16, 8);
+                assert!(!e.is_null());
+                assert_eq!((*e).m.board_name(), name);
+                assert!((*e).m.s3_mut().is_some());
+                let explicit = [0x02, 0x57, 0x41, 0x53, 0, 4];
+                assert_eq!(esp32sim_set_factory_mac(e, explicit.as_ptr(), 6), 0);
+                esp32sim_delete(e);
+            }
+        }
+    }
+    #[test]
     fn explicit_s3_factory_identity_is_preboot_atomic_and_reset_stable() {
         let board = b"x4pro";
         // SAFETY: These tests exclusively own each returned emulator/buffer.
