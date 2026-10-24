@@ -13,7 +13,7 @@ or establish a physical stripe. Pixels publish only at the existing refresh end.
 Reset cancels both scheduled edges. A jump across both edges preserves their order.
 
 Maintainer reference: FreeInk commit 699370183fa3a0e33c9cb83a36f701bbb6022095,
-`src/drivers/epd/Uc8279X4Driver.cpp` displayStart/displayFinish, explicitly polls
+`libs/display/FreeInkDisplay/src/driver/Uc8279X4Driver.cpp` displayStart/displayFinish, explicitly polls
 for BUSY assertion after DRF before completion and OLD synchronization. CrossPoint's
 FreeInk commit 32a265fa86498c014e13a5bc16133bb021cb620c has the same contract.
 These are implementation references, not an exact UC8279/C hardware datasheet.
