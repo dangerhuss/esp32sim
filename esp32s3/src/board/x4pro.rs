@@ -25,6 +25,7 @@ pub struct X4Pro {
     window: Option<(usize, usize, usize, usize)>,
     frames: u64,
     faults: u64,
+    current_invalid: bool,
     gpio_events: u64,
     edges: Vec<BoardEdge>,
     touch: Arc<Mutex<crate::i2c::TouchState>>,
@@ -55,6 +56,7 @@ impl X4Pro {
             window: None,
             frames: 0,
             faults: 0,
+            current_invalid: false,
             gpio_events: 0,
             edges: Vec::new(),
             touch: Default::default(),
@@ -71,6 +73,7 @@ impl X4Pro {
     }
     fn fault(&mut self) {
         self.faults += 1;
+        self.current_invalid = true;
     }
     fn command(&mut self, byte: u8) {
         if self.deadline.is_some() {
@@ -97,7 +100,7 @@ impl X4Pro {
                 if !self.powered
                     || !self.new_valid
                     || !self.old_valid
-                    || self.faults != 0
+                    || self.current_invalid
                     || (self.partial && self.window.is_none())
                 {
                     self.fault();
@@ -183,6 +186,8 @@ impl BoardModel for X4Pro {
             && output & (1 << 14) == 0
             && (self.enabled & (1 << 14) == 0 || self.output & (1 << 14) != 0)
         {
+            // Retain cumulative evidence; reset only the current protocol epoch.
+            self.current_invalid = false;
             self.command = 0;
             self.position = 0;
             self.old_valid = false;
@@ -404,4 +409,42 @@ mod tests {
         b.gpio_output_at(1, &[], 1 << 14, 0);
         assert!(b.window.is_none() && !b.partial);
     }
+    fn spi_command(b: &mut X4Pro, byte: u8) {
+        let mask=(1<<1)|(1<<13)|(1<<14)|(1<<18);
+        b.gpio_output_at(b.clock,&[],mask,mask&!(1<<18));
+        b.spi_transfer_pins(2,SpiPins{sclk:1<<12,mosi:1<<11,miso:None,cs:1<<13},&[byte],0);
+    }
+    fn spi_data(b: &mut X4Pro, bytes: &[u8]) {
+        let mask=(1<<1)|(1<<13)|(1<<14)|(1<<18);
+        b.gpio_output_at(b.clock,&[],mask,mask);
+        b.spi_transfer_pins(2,SpiPins{sclk:1<<12,mosi:1<<11,miso:None,cs:1<<13},bytes,0);
+    }
+    fn spi_reinitialize(b: &mut X4Pro, old: bool) {
+        if old {spi_command(b,0x10);spi_data(b,&vec![255;WIRE]);}
+        spi_command(b,0x13);spi_data(b,&vec![0;WIRE]);
+        spi_command(b,4);b.advance_to(b.deadline.unwrap());
+    }
+    fn controller_reset(b: &mut X4Pro) {
+        let mask=(1<<1)|(1<<13)|(1<<14)|(1<<18);
+        b.gpio_output_at(b.clock+1,&[],mask,mask&!(1<<14));
+        b.gpio_output_at(b.clock+1,&[],mask,mask);
+    }
+    #[test]
+    fn hardware_reset_recovers_after_fault_without_erasing_cumulative_evidence() {
+        let mut b=configured();spi_command(&mut b,0x13);spi_data(&mut b,&[0]);spi_command(&mut b,0x12);
+        assert!(b.faults>0);spi_reinitialize(&mut b,true);spi_command(&mut b,0x12);
+        assert_eq!(b.frames,0);assert!(b.deadline.is_none()); // valid writes alone cannot recover
+        let faults=b.faults;controller_reset(&mut b);assert_eq!(b.faults,faults);
+        spi_reinitialize(&mut b,true);spi_command(&mut b,0x12);
+        assert!(b.deadline.is_some(),"reset plus complete reinitialization must recover");
+        assert_eq!(b.frames,0);b.advance_to(b.deadline.unwrap());assert_eq!(b.frames,1);
+        assert_eq!(b.faults,faults);assert!(b.report().contains(&format!("protocol_faults={faults}")));
+    }
+    #[test]
+    fn hardware_reset_does_not_make_incomplete_reinitialization_valid() {
+        let mut b=configured();spi_command(&mut b,0x13);spi_data(&mut b,&[0]);spi_command(&mut b,0x12);
+        let faults=b.faults;controller_reset(&mut b);spi_reinitialize(&mut b,false);spi_command(&mut b,0x12);
+        assert_eq!(b.frames,0);assert!(b.deadline.is_none());assert!(b.faults>faults);
+    }
+
 }

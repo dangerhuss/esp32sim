@@ -10,7 +10,7 @@ pub struct X3Panel {
     command: u8, position: usize, old_valid: bool, new_valid: bool,
     enabled: u64, output: u64, cycle: u64, deadline: Option<u64>,
     powered: bool, refreshing: bool, full: bool, luts: u8,
-    pub frames: u64, pub faults: u64, edges: Vec<BoardEdge>,
+    pub frames: u64, pub faults: u64, current_invalid: bool, edges: Vec<BoardEdge>,
 }
 impl Default for X3Panel { fn default() -> Self { Self::new() } }
 impl X3Panel {
@@ -18,8 +18,10 @@ impl X3Panel {
         old: vec![255;BYTES],new: vec![255;BYTES],shown: vec![255;BYTES],
         command:0,position:0,old_valid:false,new_valid:false,enabled:0,output:0,
         cycle:0,deadline:None,powered:false,refreshing:false,full:true,luts:0,
-        frames:0,faults:0,edges:Vec::new(),
+        frames:0,faults:0,current_invalid:false,edges:Vec::new(),
     }}
+    // Fault history is diagnostic; only the actual reset pin clears active refusal.
+    pub(super) fn fault(&mut self) { self.faults+=1; self.current_invalid=true; }
     fn busy(&mut self, us:u64, refresh:bool) {
         self.deadline=Some(self.cycle.saturating_add(us*HZ/1_000_000));
         self.refreshing=refresh;self.edges.push(BoardEdge{cycle:self.cycle,pin:6,level:false});
@@ -27,6 +29,7 @@ impl X3Panel {
     pub fn gpio(&mut self, cycle:u64, enabled:u64, output:u64) {
         self.advance(cycle);
         if enabled&(1<<5)!=0 && output&(1<<5)==0 && (self.enabled&(1<<5)==0 || self.output&(1<<5)!=0) {
+            self.current_invalid=false;
             self.command=0;self.position=0;self.old_valid=false;self.new_valid=false;
             self.powered=false;self.refreshing=false;self.deadline=None;self.luts=0;
             self.edges.push(BoardEdge{cycle,pin:6,level:true});
@@ -35,12 +38,12 @@ impl X3Panel {
     }
     pub fn transfer(&mut self, tx:&[u8]) {
         if self.enabled & self.output & (1<<5)==0 { return; }
-        if self.deadline.is_some() { self.faults+=1;return; }
+        if self.deadline.is_some() { self.fault();return; }
         if self.output&(1<<4)!=0 { self.data(tx); }
         else { for &byte in tx { self.command(byte); } }
     }
     fn command(&mut self, command:u8) {
-        if matches!(self.command,0x10|0x13) && self.position!=BYTES { self.faults+=1; }
+        if matches!(self.command,0x10|0x13) && self.position!=BYTES { self.fault(); }
         self.command=command;self.position=0;
         match command {
             0x10=>self.old_valid=false,0x13=>self.new_valid=false,
@@ -48,8 +51,8 @@ impl X3Panel {
             2=>{self.powered=false;self.busy(2_000,false);},
             0x12=>{
                 if !self.powered || !self.old_valid || !self.new_valid || self.luts!=31
-                    || (!self.full && self.old!=self.shown) || self.faults!=0 {
-                    self.faults+=1;return;
+                    || (!self.full && self.old!=self.shown) || self.current_invalid {
+                    self.fault();return;
                 }
                 self.busy(if self.full {600_000}else{150_000},true);
             },
@@ -58,12 +61,12 @@ impl X3Panel {
     }
     fn data(&mut self, tx:&[u8]) {
         if matches!(self.command,0x10|0x13) {
-            if tx.len()>BYTES.saturating_sub(self.position) {self.faults+=1;return;}
+            if tx.len()>BYTES.saturating_sub(self.position) {self.fault();return;}
             let plane=if self.command==0x10 {&mut self.old}else{&mut self.new};
             plane[self.position..self.position+tx.len()].copy_from_slice(tx);self.position+=tx.len();
             if self.position==BYTES {if self.command==0x10 {self.old_valid=true;}else{self.new_valid=true;}}
         } else if (0x20..=0x24).contains(&self.command) {
-            if tx.len()!=42 {self.faults+=1;return;}
+            if tx.len()!=42 {self.fault();return;}
             if self.command==0x20 {self.full=tx[1]==0x18;self.luts=0;}
             self.luts|=1<<(self.command-0x20);
         }
