@@ -267,3 +267,17 @@ outbox after every run slice and feeds inputs in, so the page code is identical 
 - Ground truth: `hw/difftest*.sh` single-step a real ESP32-S3 over USB-JTAG (openocd + gdb)
   and compare PC/registers with the emulator running the same flash image — zero divergence
   over the ROM reset path and the bootloader.
+
+### Explicit simulation factory identity (WASM)
+
+The default `esp32sim_new` identity is unchanged. An operator fixture may call
+`esp32sim_set_factory_mac(handle, pointer, 6)` immediately after construction and
+before loading/attaching peripherals or booting. This S3-only opt-in accepts a
+locally administered unicast MAC; it refuses malformed, zero, broadcast,
+multicast or globally administered addresses. Return codes are 0 success,
+1 malformed, 2 already booted, 3 unsupported chip. It binds both the modeled
+factory eFuse and the Machine identity used for SDK resets. Normal firmware
+reads that eFuse to initialize Wi-Fi; no packet rewrite, firmware override or
+authentication bypass is involved. Distinct fixtures must supply distinct
+identities and matching independent test credentials outside the repository.
+Test the compiled ABI with `node wasm/tests/factory-mac-api.mjs web/wasm/esp32sim.wasm`.

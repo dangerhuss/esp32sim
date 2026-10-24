@@ -179,6 +179,31 @@ pub unsafe extern "C" fn esp32sim_new(board: *const u8, board_len: usize, flash_
     }))
 }
 
+/// Set an explicit locally administered unicast factory MAC before boot (S3 only).
+/// The default constructor identity is unchanged unless this opt-in call succeeds.
+/// Returns 0 on success, 1 for malformed input, 2 after boot, 3 for another chip.
+/// Call immediately after construction, before loading or attaching peripherals.
+///
+/// # Safety
+/// `e` must be a live exclusively owned emulator; `mac` must be readable for six
+/// bytes when non-null and `len` is six. Null inputs are refused without access.
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_set_factory_mac(e: *mut Emu, mac: *const u8, len: usize) -> u32 {
+    if e.is_null() || mac.is_null() || len != 6 { return 1; }
+    // SAFETY: The caller supplies a live exclusive handle and readable MAC buffer.
+    let e = unsafe { &mut *e };
+    if e.booted { return 2; }
+    // SAFETY: Six readable bytes are guaranteed by the caller and length check.
+    let value: [u8; 6] = unsafe { bytes(mac, len) }.try_into().expect("fixed length");
+    if value[0] & 3 != 2 || value == [0; 6] || value == [255; 6] { return 1; }
+    let Some(m) = e.m.s3_mut() else { return 3; };
+    // The same constructor identity supplies eFuse/SDK Wi-Fi initialization and
+    // every SDK reset. No packet rewrite or firmware identity override exists.
+    m.bus.periph.efuse = esp_periph::efuse::Efuse::new(value);
+    m.mac = value;
+    0
+}
+
 /// The page is the one client: messages queue in a `WebServer` sink; the worker paces the run.
 fn prepare<S: Soc>(m: &mut Machine<S>) {
     m.web = Some(WebServer::queued());
@@ -532,6 +557,45 @@ mod pwm_snapshot_tests {
                 assert_eq!(esp32sim_cycles(handle), before);
                 esp32sim_delete(handle);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod factory_mac_tests {
+    use super::*;
+    #[test]
+    fn explicit_s3_factory_identity_is_preboot_atomic_and_reset_stable() {
+        let board = b"x4pro";
+        // SAFETY: These tests exclusively own each returned emulator/buffer.
+        unsafe {
+            let e = esp32sim_new(board.as_ptr(), board.len(), 16, 8);
+            assert!(!e.is_null());
+            let default = [0x44,0x1b,0xf6,0x75,0xdc,0xe0];
+            assert_eq!((*e).m.s3_mut().unwrap().mac, default);
+            for invalid in [[0;6], [255;6], [0x57,0x41,0x53,0,0,4], [0x00,0x11,0x22,0x33,0x44,0x55]] {
+                assert_eq!(esp32sim_set_factory_mac(e,invalid.as_ptr(),6),1);
+                assert_eq!((*e).m.s3_mut().unwrap().mac,default);
+            }
+            let explicit = [0x02,0x57,0x41,0x53,0,4];
+            assert_eq!(esp32sim_set_factory_mac(e,std::ptr::null(),6),1);
+            assert_eq!(esp32sim_set_factory_mac(e,explicit.as_ptr(),5),1);
+            assert_eq!(esp32sim_set_factory_mac(e,explicit.as_ptr(),6),0);
+            let m = (*e).m.s3_mut().unwrap();
+            assert_eq!(m.mac,explicit);
+            assert_eq!(m.bus.periph.efuse.read(0x44),0x41530004);
+            assert_eq!(m.bus.periph.efuse.read(0x48)&0xffff,0x0257);
+            // Actual reset constructor uses Machine.mac, not the old default.
+            m.bus.reboot(m.mac);
+            assert_eq!(m.bus.periph.efuse.read(0x44),0x41530004);
+            assert_eq!(m.bus.periph.efuse.read(0x48)&0xffff,0x0257);
+            assert_eq!(esp32sim_boot(e,0),0);
+            assert_eq!(esp32sim_set_factory_mac(e,default.as_ptr(),6),2);
+            assert_eq!((*e).m.s3_mut().unwrap().mac,explicit);
+            esp32sim_delete(e);
+            let c3 = b"esp32c3";let e = esp32sim_new(c3.as_ptr(),c3.len(),4,0);
+            assert_eq!(esp32sim_set_factory_mac(e,explicit.as_ptr(),6),3);
+            esp32sim_delete(e);
         }
     }
 }
