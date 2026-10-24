@@ -43,7 +43,7 @@ fn ap() -> VirtualAp {
     ap
 }
 
-type BusCase = (Box<dyn SocBus>, u32, u32, u32, bool);
+type BusCase = (Box<dyn SocBus>, u32, u32, u32, bool, bool);
 
 fn buses() -> Vec<BusCase> {
     let mut s3 = esp32s3::bus::SocBus::new(1 << 20, 0, STA);
@@ -57,19 +57,22 @@ fn buses() -> Vec<BusCase> {
     c6.periph.wifi_mac.link.attach(Some(ap()), Some(VirtualNet::new(false)));
     c6.periph.wifi_mac.link.net_mut().unwrap().nat = Some(esp_soc::nat::Nat::new(false));
     vec![
-        (Box::new(s3), 0x3fc90000, 0x60033000, 240_000, false),
-        (Box::new(c3), 0x3fc90000, 0x60033000, 160_000, false),
-        (Box::new(c6), 0x40810000, 0x600a4000, 160_000, true),
+        (Box::new(s3), 0x3fc90000, 0x60033000, 240_000, false, false),
+        (Box::new(c3), 0x3fc90000, 0x60033000, 160_000, false, true),
+        (Box::new(c6), 0x40810000, 0x600a4000, 160_000, true, false),
     ]
 }
 
-fn transmit(bus: &mut dyn SocBus, ram: u32, mac: u32, c6: bool, eth: &[u8]) {
+fn transmit(bus: &mut dyn SocBus, ram: u32, mac: u32, c6: bool, c3: bool, eth: &[u8]) {
     let mut f = vec![0x08, 0x01, 0, 0];
     f.extend_from_slice(&AP);
     f.extend_from_slice(&STA);
     f.extend_from_slice(&eth[..6]);
     f.extend_from_slice(&[0, 0, 0xaa, 0xaa, 3, 0, 0, 0]);
     f.extend_from_slice(&eth[12..]);
+    // Match the C3 SDK descriptor contract: DMA includes the hardware FCS reserve.
+    // Relay assertions still compare the entire original Ethernet payload.
+    if c3 { f.extend_from_slice(&[0; 4]); }
     let len = f.len();
     if c6 {
         let mut packet = (len as u32).to_le_bytes().to_vec();
@@ -117,9 +120,9 @@ fn received(bus: &mut dyn SocBus, ram: u32, c6: bool) -> Vec<u8> {
 fn dhcp_discover_relay_and_default_network_use_the_same_guest_descriptors() {
     let discover = discover();
     let reply = VirtualNet::new(false).handle(&discover, 1000).remove(0);
-    for (mut bus, ram, mac, cycles, c6) in buses() {
+    for (mut bus, ram, mac, cycles, c6, c3) in buses() {
         bus.set_ethernet_relay(true).unwrap();
-        transmit(&mut *bus, ram, mac, c6, &discover);
+        transmit(&mut *bus, ram, mac, c6, c3, &discover);
         bus.tick(cycles);
         assert_eq!(bus.take_ethernet_frames(), vec![discover.clone()]);
         assert!(bus.take_ethernet_frames().is_empty());
@@ -137,7 +140,7 @@ fn dhcp_discover_relay_and_default_network_use_the_same_guest_descriptors() {
         // Switching back resumes the original network, including its NAT object.
         bus.set_ethernet_relay(false).unwrap();
         arm_rx(&mut *bus, ram, mac, c6);
-        transmit(&mut *bus, ram, mac, c6, &discover);
+        transmit(&mut *bus, ram, mac, c6, c3, &discover);
         bus.tick(cycles);
         bus.tick(cycles);
         bus.flush_ticks();
@@ -148,7 +151,7 @@ fn dhcp_discover_relay_and_default_network_use_the_same_guest_descriptors() {
 
 #[test]
 fn relay_bounds_mode_changes_and_reset() {
-    for (mut bus, ram, mac, cycles, c6) in buses() {
+    for (mut bus, ram, mac, cycles, c6, c3) in buses() {
         assert!(bus.receive_ethernet_frame(&[0; 14]).is_err());
         bus.set_ethernet_relay(true).unwrap();
         for len in [0, 13, 1519] {
@@ -169,7 +172,7 @@ fn relay_bounds_mode_changes_and_reset() {
         bus.reboot(STA);
         bus.receive_ethernet_frame(&[0; 14]).unwrap();
         for _ in 0..65 {
-            transmit(&mut *bus, ram, mac, c6, &discover());
+            transmit(&mut *bus, ram, mac, c6, c3, &discover());
             bus.tick(cycles);
         }
         assert_eq!(bus.take_ethernet_frames().len(), 64);
@@ -179,7 +182,7 @@ fn relay_bounds_mode_changes_and_reset() {
 #[test]
 fn relay_rx_backpressure_keeps_frames_until_the_next_tick() {
     let reply = VirtualNet::new(false).handle(&discover(), 1000).remove(0);
-    for (mut bus, ram, mac, cycles, c6) in buses() {
+    for (mut bus, ram, mac, cycles, c6, _) in buses() {
         bus.set_ethernet_relay(true).unwrap();
         // Consume the initial beacon before the relay frames.
         bus.tick(cycles); bus.flush_ticks();
@@ -218,7 +221,7 @@ fn s3_reboot_preserves_the_host_ap_and_network() {
     assert_eq!(ap.sta, STA); assert_eq!(ap.state, StaState::Associated);
     let net = bus.periph.wifi.link.net().expect("network survives reboot");
     assert_eq!(net.gw_ip, [10, 1, 2, 3]); assert_eq!(net.dhcp_acks, 7); assert!(net.nat.is_some());
-    transmit(&mut bus, 0x3fc90000, 0x60033000, false, &discover());
+    transmit(&mut bus, 0x3fc90000, 0x60033000, false, false, &discover());
     bus.tick(240_000); bus.flush_ticks();
     assert!(bus.periph.wifi.link.eth_tx_pending() == 0);
     assert_eq!(bus.periph.wifi.link.ap().unwrap().stats.2, 1);
@@ -227,20 +230,20 @@ fn s3_reboot_preserves_the_host_ap_and_network() {
 #[test]
 fn relay_tx_counts_oversize_and_full_queue_drops() {
     macro_rules! check {
-        ($bus:expr, $wifi:ident, $ram:expr, $mac:expr, $cycles:expr, $c6:expr) => {{
+        ($bus:expr, $wifi:ident, $ram:expr, $mac:expr, $cycles:expr, $c6:expr, $c3:expr) => {{
             let mut bus = $bus;
             bus.periph.$wifi.link.attach(Some(ap()), None); bus.set_ethernet_relay(true).unwrap();
             let mut frame = discover(); frame.resize(1519, 0);
-            transmit(&mut bus, $ram, $mac, $c6, &frame); bus.tick($cycles); bus.flush_ticks();
+            transmit(&mut bus, $ram, $mac, $c6, $c3, &frame); bus.tick($cycles); bus.flush_ticks();
             assert_eq!(bus.periph.$wifi.link.tx_dropped(), 1); assert!(bus.take_ethernet_frames().is_empty());
             frame.truncate(1518);
-            for _ in 0..65 { transmit(&mut bus, $ram, $mac, $c6, &frame); bus.tick($cycles); bus.flush_ticks(); }
+            for _ in 0..65 { transmit(&mut bus, $ram, $mac, $c6, $c3, &frame); bus.tick($cycles); bus.flush_ticks(); }
             assert_eq!(bus.periph.$wifi.link.tx_dropped(), 2); assert_eq!(bus.take_ethernet_frames().len(), 64);
-            transmit(&mut bus, $ram, $mac, $c6, &frame); bus.tick($cycles); bus.flush_ticks();
+            transmit(&mut bus, $ram, $mac, $c6, $c3, &frame); bus.tick($cycles); bus.flush_ticks();
             assert_eq!(bus.periph.$wifi.link.tx_dropped(), 2); assert_eq!(bus.take_ethernet_frames(), vec![frame]);
         }};
     }
-    check!(esp32s3::bus::SocBus::new(1 << 20, 0, STA), wifi, 0x3fc90000, 0x60033000, 240_000, false);
-    check!(esp32c3::bus::SocBus::new(1 << 20, STA), wifi, 0x3fc90000, 0x60033000, 160_000, false);
-    check!(esp32c6::bus::SocBus::new(1 << 20, STA), wifi_mac, 0x40810000, 0x600a4000, 160_000, true);
+    check!(esp32s3::bus::SocBus::new(1 << 20, 0, STA), wifi, 0x3fc90000, 0x60033000, 240_000, false, false);
+    check!(esp32c3::bus::SocBus::new(1 << 20, STA), wifi, 0x3fc90000, 0x60033000, 160_000, false, true);
+    check!(esp32c6::bus::SocBus::new(1 << 20, STA), wifi_mac, 0x40810000, 0x600a4000, 160_000, true, false);
 }

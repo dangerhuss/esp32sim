@@ -48,9 +48,10 @@ impl Soc for S3 {
         c.set_ar(0, 0);
     }
     fn irqs(bus: &SocBus, out: &mut [u32]) { let (l0, l1) = bus.periph.cpu_lines_both(); out[0] = l0; out[1] = l1; }
-    /// Core 0 is always running. SYSTEM_CORE_1_CONTROL_0 controls core 1's clock gate, reset,
+    /// RTC deep sleep gates both cores. SYSTEM_CORE_1_CONTROL_0 controls core 1's clock gate, reset,
     /// and run-stall state.
     fn core_state(bus: &SocBus, core: usize) -> CoreState {
+        if bus.periph.rtc.sleeping { return CoreState::Held; }
         if core == 0 { return CoreState::Running; }
         let (clk, reset, stall) = bus.periph.core1_control();
         if reset { CoreState::Reset } else if clk && !stall { CoreState::Running } else { CoreState::Held }
@@ -58,6 +59,7 @@ impl Soc for S3 {
 }
 
 impl esp_soc::SocBus for SocBus {
+    fn deep_sleep_state(&self) -> Option<bool> { Some(self.periph.rtc.sleeping) }
     fn set_rng_source(&mut self, source: esp_periph::rng::RngSource) -> Result<(), String> { self.periph.wdev.entropy = Some(source); Ok(()) }
     fn sd_image_bytes(&self) -> Option<&[u8]> { self.periph.sdmmc.image() }
     fn enable_ble(&mut self, elf: &esp_soc::elf::Elf) -> Result<(), String> { self.ble.enable(&elf.by_name, elf.symbol_sizes.get("esp_bt_controller_init").copied().unwrap_or(0), &<Self as esp_soc::ble::vhci::VhciBus>::abi()) }
@@ -156,11 +158,21 @@ impl esp_soc::SocBus for SocBus {
         self.flush_ticks();
         self.cancel_spi2_timing();
         let cause = self.periph.rtc.reset_cause;
+        if cause == 5 {
+            // Ordinary deep sleep loses digital SRAM and PSRAM. The RTC
+            // memories, flash, SD and external panel/board survive this reset.
+            self.sram.fill(0); self.psram.fill(0);
+            self.note_written(crate::bus::SRC_SRAM, 0, self.sram.len());
+            self.note_written(crate::bus::SRC_PSRAM, 0, self.psram.len());
+        }
         let mut old = std::mem::replace(&mut self.periph, periph::Peripherals::new(mac));
         let p = &mut self.periph;
         p.wdev.entropy = old.wdev.entropy.take(); // Host entropy survives a guest reset.
         // The host AP and network survive a guest reboot; only the MAC and relay queues reset.
         p.wifi.link = old.wifi.link.surviving_reboot();
+        // The controller resets; its attached SD card is external nonvolatile
+        // storage. Keep that card and its writes across every digital reset.
+        p.sdmmc.card = old.sdmmc.card.take();
         // Host camera cadence and logging survive; guest capture state resets.
         p.lcd_cam.frame_cycles = old.lcd_cam.frame_cycles;
         p.efuse = old.efuse;
@@ -173,7 +185,7 @@ impl esp_soc::SocBus for SocBus {
         p.spi0.jedec = old.spi0.jedec; p.spi1.jedec = old.spi1.jedec;   // the flash chip is not reset: its ID keeps the --flash-mb capacity
         p.rtc.ram = old.rtc.ram; p.rtc.slow_ticks = old.rtc.slow_ticks;
         p.rtc.ram.write(0x38, cause | (cause << 6));
-        p.rtc.ram.write(0x98, 0);                       // watchdog disarmed by the reset; the ROM re-arms it
+        p.rtc.ram.write(0x98, 1 << 9); // Watchdog disarmed; reset-default PAUSE_IN_SLP remains set.
         p.i2s0.pcm = old.i2s0.pcm; p.i2s0.frames_out = old.i2s0.frames_out; p.i2s1.pcm = old.i2s1.pcm; p.i2s1.frames_out = old.i2s1.frames_out;   // keep the captured audio continuous
         self.mmu = [MMU_INVALID; MMU_ENTRIES];
         self.invalidate_tlb();

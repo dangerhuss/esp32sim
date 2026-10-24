@@ -14,6 +14,7 @@ pub mod atech14;
 pub mod waveshare_amoled18;
 pub mod waveshare_cam;
 pub mod waveshare_lcd4b;
+pub mod x4pro;
 
 pub use atech14::*;
 pub use waveshare_amoled18::*;
@@ -23,6 +24,7 @@ pub use waveshare_lcd4b::*;
 /// Board by name: `atech14` (default), `none`, or a supported Waveshare board.
 pub fn make_board(name: &str) -> Option<Board> {
     match name {
+        "x4pro" => Some(Box::new(x4pro::X4Pro::new())),
         "atech14" | "atech" => Some(Box::new(Atech14::new())),
         "none" | "bare" => Some(Box::new(NoBoard)),
         "waveshare-cam" | "waveshare" => Some(Box::new(WaveshareCam::new())),

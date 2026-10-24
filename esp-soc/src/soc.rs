@@ -95,6 +95,9 @@ impl GpioState {
 }
 
 pub trait SocBus: Bus {
+    /// Observation of modeled physical deep sleep. None means unsupported,
+    /// never evidence that an unsupported chip is awake or asleep.
+    fn deep_sleep_state(&self) -> Option<bool> { None }
     /// Replace only RNG-register words with frontend-supplied entropy. No
     /// filesystem I/O in the model; offline deterministic behavior stays default.
     fn set_rng_source(&mut self, _source: esp_periph::rng::RngSource) -> Result<(), String> { Err("this chip has no entropy input".into()) }

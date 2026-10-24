@@ -22,8 +22,10 @@ fn timer_one_alarm_has_an_independent_interrupt_source() {
 #[test]
 fn rtc_watchdog_layouts_protect_feed_and_reset_at_their_own_offsets() {
     for (mut rtc, base) in [(RtcCntl::new(), 0x98), (RtcCntl::new_c3(), 0x90)] {
+        // S3 v6.1 RTC_CNTL_WDTCONFIG0 reset default includes PAUSE_IN_SLP.
+        let reset_default = if base == 0x98 { 1 << 9 } else { 0 };
         rtc.write(base, RESET_STAGE0);
-        assert_eq!(rtc.read(base), 0, "configuration starts write-protected");
+        assert_eq!(rtc.read(base), reset_default, "configuration starts write-protected");
         rtc.write(base + 0x18, UNLOCK);
         rtc.write(base + 4, 10);
         rtc.write(base, RESET_STAGE0);

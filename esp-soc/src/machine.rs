@@ -579,7 +579,7 @@ impl<S: Soc> Machine<S> {
             self.refresh_irq();
             if self.bus.sw_reset() { self.drain_console(); return Stop::SwReset; }
             if self.bus.cycles() >= self.max_cycles { self.drain_console(); return Stop::Halted; }
-            for (i, state) in on.iter_mut().enumerate().take(S::CORES).skip(1) {
+            for (i, state) in on.iter_mut().enumerate().take(S::CORES) {
                 *state = match S::core_state(&self.bus, i) {
                     CoreState::Reset => { self.core_held[i] = true; false }
                     CoreState::Held => false,

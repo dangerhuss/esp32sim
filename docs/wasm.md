@@ -287,3 +287,58 @@ success or 1 for invalid commands/state/chip. Reads use the guest ATT server.
 The central models one unencrypted 1M CSA#1 connection with a 30 ms interval,
 2 s supervision timeout and ATT MTU 23. See [EX213](evidence/ble-c3-connection/README.md)
 for model limits and the production-module reconnect test.
+
+## Explicit connected SDK host bindings
+
+`esp32sim_sd_attach(e, ptr, len)` attaches an in-memory image before boot to
+the same S3 SDMMC or C3 X3-wired SDSPI model used by the native CLI. Images must
+be nonempty sector multiples, at most64 MiB. Small images use the card model's
+normal CSD capacity padding. Other chips and attachment after boot are refused.
+`esp32sim_sd_len(e)` reports the actual modeled capacity; allocate that many
+bytes and call `esp32sim_sd_copy(e, ptr, len)` to preserve the complete image.
+The copy refuses truncation. These are host bindings; the browser form does not
+yet attach or persist a card automatically. Electrical/card/cache timing and
+sudden power loss remain uncalibrated.
+
+Connected TLS runs must explicitly call `esp32sim_rng_host(e)` before boot, then
+feed actual host cryptographic entropy through `esp32sim_rng_feed(e, ptr, len)`.
+Input is little-endian u32 words, bounded to4096 unread words. Partial words,
+overflow and feeding before selection are refused without mutation. Check
+`esp32sim_rng_available(e)` and refill between run slices using Web Crypto or
+Node crypto. Exhaustion stops the model rather than falling back to its offline
+deterministic generator. No new WASM imports are required; existing offline
+frontends retain their default behavior.
+
+The Ethernet relay above carries the unchanged guest's encrypted packets. For
+a Node-hosted check, `cargo build --release -p esp-soc --example ethernet_stdio`
+builds a local stdio helper that reuses the existing VirtualNet/NAT. It opens
+no listening socket and does not terminate guest TLS or manufacture telemetry.
+Its bounded frame protocol is documented in the example. Keep private input
+cards, connection profiles and whole-device flash images outside Git.
+
+
+## C3 WPA3-SAE initial association
+
+The shared AP parser accepts `ssid=NAME,psk=PASSWORD,auth=sae` through
+`esp32sim_wifi` and the native `--wifi` option. The default stays WPA2 when a
+password is supplied and open otherwise. `sae` advertises group19/P-256 H2E,
+SAE AKM8, CCMP and required/capable PMF. It executes real SAE Commit/Confirm,
+SHA256 PTK derivation and AES-CMAC EAPOL authentication, followed by GTK/IGTK
+installation. The guest's Wi-Fi library and firmware image are unchanged.
+
+The scalar/curve core is reused from the pinned MIT-declared oxwifid source;
+see `esp-soc/src/wifi/sae/NOTICE`. AP scalars/nonces are deterministic simulation
+inputs, as with the existing WPA2 AP. Guest RNG remains a separate real-host
+entropy input. This peer is for initial association: PMF key installation is
+supported, but SA Query, authenticated robust-management teardown, reassociation,
+rekey and multi-station/radio qualification are not. Unverified teardown and
+reassociation are refused. A successful connection does not qualify RF behavior
+or production AP security.
+
+The C3 TX adapter removes the four-byte hardware FCS reserve at the explicit
+`StationLink::station_tx_with_fcs` boundary. SAE bodies must never parse that
+trailer as an information element. Direct `station_tx` callers supply frames
+without FCS. Other chip adapters are not newly qualified by the C3 evidence.
+
+See [EX234 evidence](evidence/wpa3-h2e/README.md) for unchanged-image retained
+telemetry and the remaining timing limits.

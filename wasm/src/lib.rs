@@ -13,6 +13,8 @@ mod machine;
 mod network;
 mod ethernet;
 mod ble;
+mod host_io;
+pub use host_io::*;
 pub use ble::*;
 pub use ethernet::*;
 mod s3;
@@ -48,6 +50,7 @@ pub struct Emu {
     ethernet_out: Vec<Vec<u8>>,
     ble_out: String,
     booted: bool,
+    entropy: Option<host_io::Entropy>,
     #[cfg(target_arch = "wasm32")]
     jit: BrowserJit,
 }
@@ -170,6 +173,7 @@ pub unsafe extern "C" fn esp32sim_new(board: *const u8, board_len: usize, flash_
         m,
         out: Vec::new(), ethernet_out: Vec::new(), ble_out: String::new(),
         booted: false,
+        entropy: None,
         #[cfg(target_arch = "wasm32")]
         jit: BrowserJit::default(),
     }))
@@ -310,6 +314,19 @@ pub unsafe extern "C" fn esp32sim_run(e: *mut Emu, cycles: u32, unix_ms: f64) ->
     e.m.run_slice(cycles)
 }
 
+/// Observe register-driven deep sleep: 0 awake, 1 asleep, 2 unsupported.
+/// This does not force a power transition or replace a guest operation.
+///
+/// # Safety
+/// `e` must point to a live emulator to which the caller has exclusive access.
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_deep_sleep_state(e: *mut Emu) -> u32 {
+    // SAFETY: The caller provides exclusive access to a live emulator.
+    match unsafe { &mut *e }.m.bus().deep_sleep_state() {
+        Some(false) => 0, Some(true) => 1, None => 2,
+    }
+}
+
 /// The emulated CPU clock, so the driver paces the right chip: 240 MHz on the S3, 160 on the C3.
 ///
 /// # Safety
@@ -334,6 +351,26 @@ pub unsafe extern "C" fn esp32sim_run(e: *mut Emu, cycles: u32, unix_ms: f64) ->
     // SAFETY: The caller provides shared access to a live emulator without overlapping mutation.
     unsafe { &*e }.m.insns()
 }
+
+/// Snapshot the existing GPIO-matrix PWM model: field 0 is frequency in Hz,
+/// field 1 is the high-time fraction scaled to 0..65535. Returns -1 when the
+/// pin/field is invalid or PWM is unsupported, disabled, unrouted or paused.
+/// Unavailable PWM does not establish a low GPIO. No execution is advanced.
+///
+/// # Safety
+/// `e` must point to a live emulator with exclusive access for this call.
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_pwm_snapshot(e: *mut Emu, pin: u32, field: u32) -> f64 {
+    let Ok(pin) = u8::try_from(pin) else { return -1.0; };
+    if field > 1 { return -1.0; }
+    // SAFETY: the caller provides exclusive access to the live emulator.
+    let e = unsafe { &mut *e };
+    match e.m.bus().pwm_output(pin) {
+        Some((frequency, duty)) => if field == 0 { frequency } else { f64::from(duty) },
+        None => -1.0,
+    }
+}
+
 
 #[cfg(target_arch = "wasm32")]
 #[cfg(feature = "cpu-profile")]
@@ -459,4 +496,42 @@ pub extern "C" fn esp32sim_test_gpio_waveform() -> u32 {
     std::panic::set_hook(Box::new(|info| log(&format!("[waveform test] {info}"))));
     gpio_waveform_tests::run();
     24
+}
+
+#[cfg(test)]
+mod pwm_snapshot_tests {
+    use super::*;
+    #[test]
+    fn pwm_snapshot_reports_actual_model_and_preserves_unknown_and_time() {
+        for board in ["atech14", "esp32c3"] {
+            // SAFETY: board is readable and this test owns the returned handle.
+            let handle = unsafe { esp32sim_new(board.as_ptr(), board.len(), 16, 8) };
+            assert!(!handle.is_null());
+            // SAFETY: all calls exclusively borrow this live owned handle.
+            unsafe {
+                assert_eq!(esp32sim_pwm_snapshot(handle, 8, 0), -1.0);
+                assert_eq!(esp32sim_pwm_snapshot(handle, 256, 0), -1.0);
+                assert_eq!(esp32sim_pwm_snapshot(handle, 8, 2), -1.0);
+                let before = esp32sim_cycles(handle);
+                if let Some(m) = (&mut *handle).m.s3_mut() {
+                    // Existing S3 PWM fixture: IDF5.5 ledc_reg.h/gpio_reg.h,
+                    // same register bindings as esp32s3/tests/pwm.rs.
+                    let p = &mut m.bus.periph;
+                    p.write32(0x600c0018, 1 << 11);
+                    p.write32(0x60004024, 1 << 4);
+                    p.write32(0x600190d0, 3);
+                    p.write32(0x600190a0, 8 | (256 << 4) | (1 << 25));
+                    p.write32(0x60019008, 64 << 4);
+                    p.write32(0x6001900c, 1 << 31);
+                    p.write32(0x60019000, 4 | (1 << 4));
+                    p.write32(0x60004564, 73);
+                    p.tick(10000);
+                    assert_eq!(esp32sim_pwm_snapshot(handle, 4, 0), 156250.0);
+                    assert_eq!(esp32sim_pwm_snapshot(handle, 4, 1), 16384.0);
+                }
+                assert_eq!(esp32sim_cycles(handle), before);
+                esp32sim_delete(handle);
+            }
+        }
+    }
 }

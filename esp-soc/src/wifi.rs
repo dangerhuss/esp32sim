@@ -4,6 +4,10 @@
 
 #[cfg(test)]
 mod tests;
+pub mod sae;
+mod sae_ap;
+#[cfg(test)]
+mod sae_tests;
 
 pub fn mac_str(m: &[u8]) -> String { m.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(":") }
 
@@ -36,18 +40,25 @@ pub fn is_beacon(f: &[u8]) -> bool { f.len() >= 2 && f[0] & 0x0c == 0 && (f[0] >
 
 /// RSN information element advertised in beacons and echoed in handshake message 3: WPA2-PSK, CCMP.
 pub const RSN_IE: &[u8] = &[48, 20, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 2, 0, 0];
+// IDF6.1 ieee802_11_defs.h: SAE AKM8, MFPR/MFPC, BIP-CMAC128; RSNX H2E bit5.
+pub const SAE_RSN_IE: &[u8] = &[48,26,1,0,0,15,172,4,1,0,0,15,172,4,1,0,0,15,172,8,192,0,0,0,0,15,172,6];
+pub const SAE_RSNXE: &[u8] = &[244,1,32];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ApAuth { #[default] Psk, SaeH2e }
 
 #[derive(Clone, Debug)]
-pub struct ApConfig { pub ssid: String, pub bssid: [u8; 6], pub channel: u8, pub psk: Option<String> }
+pub struct ApConfig { pub ssid: String, pub bssid: [u8; 6], pub channel: u8, pub psk: Option<String>, pub auth: ApAuth }
 
 impl ApConfig {
     /// Parse the shared CLI/browser AP configuration. Unknown keys are errors so a
     /// misspelled passphrase option cannot silently configure an open network.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut cfg = Self {
-            ssid: "esp32sim".into(), bssid: [0x02, 0x53, 0x49, 0x4d, 0x00, 0x01], channel: 6, psk: None,
+            ssid: "esp32sim".into(), bssid: [0x02, 0x53, 0x49, 0x4d, 0x00, 0x01], channel: 6, psk: None, auth: ApAuth::Psk,
         };
         if spec.is_empty() { return Ok(cfg); }
+        let mut explicit_auth = false;
         for entry in spec.split(',') {
             let (key, value) = entry.split_once('=')
                 .ok_or_else(|| format!("invalid WiFi option '{entry}': expected key=value"))?;
@@ -58,6 +69,11 @@ impl ApConfig {
                         .ok_or_else(|| format!("invalid WiFi channel '{value}': expected 1 through 14"))?;
                 }
                 "psk" | "password" | "pass" => cfg.psk = Some(value.to_string()),
+                "auth" => { explicit_auth=true; cfg.auth = match value {
+                    "wpa2" | "psk" => ApAuth::Psk,
+                    "sae" | "wpa3" => ApAuth::SaeH2e,
+                    _ => return Err("unsupported WiFi auth: expected wpa2 or sae (group19 H2E)".into()),
+                }; },
                 "bssid" => {
                     let invalid = || format!("invalid WiFi BSSID '{value}': expected six hexadecimal octets");
                     let mut octets = value.split(':');
@@ -70,6 +86,11 @@ impl ApConfig {
                 }
                 _ => return Err(format!("unknown WiFi option '{key}'")),
             }
+        }
+        if explicit_auth && cfg.psk.is_none() { return Err("explicit secure auth requires a password".into()); }
+        if cfg.auth == ApAuth::SaeH2e && (cfg.ssid.is_empty() || cfg.ssid.len()>32 ||
+            !cfg.psk.as_ref().is_some_and(|p| (8..=63).contains(&p.len()))) {
+            return Err("SAE requires a 1..32 byte SSID and 8..63 byte password".into());
         }
         Ok(cfg)
     }
@@ -98,6 +119,8 @@ pub struct Wpa {
     pub gtk: [u8; 16],
     pub replay: u64,
     pub state: WpaState,
+    kck: [u8;16],
+    igtk: [u8;16],
 }
 
 pub struct VirtualAp {
@@ -113,20 +136,23 @@ pub struct VirtualAp {
     pub log: bool,
     pub stats: (u64, u64, u64),   // beacons, probe responses, data frames from the station
     pub pn: u64,                  // CCMP packet number for frames we send
+    sae_exchange: Option<sae_ap::Exchange>,
 }
 
 impl VirtualAp {
     pub fn new(cfg: ApConfig, log: bool) -> Self {
         let mut wpa = Wpa::default();
         if let Some(psk) = &cfg.psk {
-            wpa.pmk.copy_from_slice(&esp_periph::crypto::pbkdf2_sha1(psk.as_bytes(), cfg.ssid.as_bytes(), 4096, 32));
+            if cfg.auth == ApAuth::Psk {
+                wpa.pmk.copy_from_slice(&esp_periph::crypto::pbkdf2_sha1(psk.as_bytes(), cfg.ssid.as_bytes(), 4096, 32));
+            }
             // deterministic nonces/GTK: the emulator must replay identically run to run
             let seed = esp_periph::crypto::sha1(&[&wpa.pmk[..], &cfg.bssid[..]].concat());
             for i in 0..32 { wpa.anonce[i] = seed[i % 20] ^ (i as u8); }
             for i in 0..16 { wpa.gtk[i] = seed[(i + 3) % 20] ^ 0x5a; }
         }
         VirtualAp { cfg, wpa, state: StaState::Idle, sta: [0; 6], aid: 1, next_beacon_us: 100_000, beacon_interval_us: 102_400, seq: 0,
-                    queue: Vec::new(), pn: 0, log, stats: (0, 0, 0) }
+                    queue: Vec::new(), pn: 0, log, stats: (0, 0, 0), sae_exchange: None }
     }
     fn hdr(&mut self, fc: u16, a1: &[u8; 6], a3: &[u8; 6]) -> Vec<u8> {
         let mut f = Vec::with_capacity(128);
@@ -143,7 +169,8 @@ impl VirtualAp {
         f.extend_from_slice(&[5, 4, 0, 1, 0, 0]);                                           // TIM
         f.extend_from_slice(&[7, 6, b'S', b'E', b' ', 1, 13, 20]);                          // country
         f.extend_from_slice(&[50, 4, 0x30, 0x48, 0x60, 0x6c]);                              // extended rates 24 36 48 54
-        if self.cfg.psk.is_some() { f.extend_from_slice(RSN_IE); }                          // RSN: WPA2-PSK, CCMP
+        if self.cfg.auth == ApAuth::SaeH2e { f.extend_from_slice(SAE_RSN_IE); f.extend_from_slice(SAE_RSNXE); }
+        else if self.cfg.psk.is_some() { f.extend_from_slice(RSN_IE); }                     // RSN: WPA2-PSK, CCMP
     }
     fn beacon_like(&mut self, subtype: u16, dst: &[u8; 6], now_us: u64) -> Vec<u8> {
         let bssid = self.cfg.bssid;
@@ -190,7 +217,9 @@ impl VirtualAp {
             (0, 11) if f.len() >= 30 && to_us(&f[4..10]) => {                                // authentication (open system)
                 let (alg, seq) = (u16::from_le_bytes([f[24], f[25]]), u16::from_le_bytes([f[26], f[27]]));
                 if self.log { eprintln!("[wifi] station AUTH req alg={} seq={} status={} hex={:02x?}", alg, seq, u16::from_le_bytes([f[28],f[29]]), f); }
-                if alg == 0 && seq == 1 {
+                if self.cfg.auth == ApAuth::SaeH2e {
+                    if alg == 3 && f[16..22] == self.cfg.bssid { self.on_sae_auth(&a2,seq,u16::from_le_bytes([f[28],f[29]]),&f[30..],now_us); }
+                } else if alg == 0 && seq == 1 {
                     self.sta = a2; self.state = StaState::Authenticated;
                     let mut r = self.hdr(11 << 4, &a2, &self.cfg.bssid.clone());
                     r.extend_from_slice(&[0, 0, 2, 0, 0, 0]);                                // open, seq 2, status success
@@ -198,6 +227,11 @@ impl VirtualAp {
                 }
             }
             (0, 0) | (0, 2) if to_us(&f[4..10]) && self.state != StaState::Idle => {         // (re)association request
+                if self.cfg.auth == ApAuth::SaeH2e && (self.state == StaState::Associated || a2 != self.sta ||
+                    !self.sae_exchange.as_ref().is_some_and(|s|s.confirmed)) { return None; }
+                if self.cfg.auth == ApAuth::SaeH2e && (st!=0 || f.len()<28 || f[16..22]!=self.cfg.bssid ||
+                    !ies(f,28).iter().any(|(id,rsn)| *id==48 && rsn.len()>=20 &&
+                        rsn[..18]==SAE_RSN_IE[2..20] && rsn[18]&0x80!=0)) { return None; }
                 self.state = StaState::Associated;
                 let mut r = self.hdr(1 << 4, &a2, &self.cfg.bssid.clone());
                 r.extend_from_slice(&self.capability().to_le_bytes()); r.extend_from_slice(&[0, 0]); r.extend_from_slice(&(0xc000 | self.aid).to_le_bytes());
@@ -205,13 +239,18 @@ impl VirtualAp {
                 self.send(now_us + 300, r);
                 if self.cfg.psk.is_some() {                       // WPA2: start the four-way handshake
                     self.wpa.replay += 1;
-                    let m1 = self.eapol(0x008a, self.wpa.anonce, &[], None);
+                    let m1 = self.eapol(if self.cfg.auth == ApAuth::SaeH2e {0x0088} else {0x008a}, self.wpa.anonce, &[], None);
                     self.send(now_us + 30_000, m1);
                     self.wpa.state = WpaState::AwaitingMessage2;
                 }
             }
-            (0, 12) | (0, 10) if to_us(&f[4..10]) => { self.state = StaState::Idle; }
+            (0, 12) | (0, 10) if to_us(&f[4..10]) => {
+                // PMF rekey/robust-management validation is outside this bounded
+                // initial-association peer. Never trust an unverified teardown.
+                if self.cfg.auth != ApAuth::SaeH2e { self.state = StaState::Idle; }
+            }
             (2, _) if self.state == StaState::Associated && f[4..10] == self.cfg.bssid => {  // data to the DS
+                if self.cfg.auth == ApAuth::SaeH2e && a2!=self.sta { return None; }
                 if st == 4 || st == 12 { return None; }                                       // null frames (power save)
                 let hdr = if st & 8 != 0 { 26 } else { 24 };
                 // Protected frame: the MAC would have encrypted in place, so the descriptor holds
@@ -228,6 +267,7 @@ impl VirtualAp {
                     self.on_eapol(&f[hdr + 8..], now_us);
                     return None;
                 }
+                if self.cfg.auth == ApAuth::SaeH2e && self.wpa.state != WpaState::Installed { return None; }
                 self.stats.2 += 1; return Some(f.to_vec());
             }
             _ => {}
@@ -253,8 +293,13 @@ impl VirtualAp {
         body.extend_from_slice(&(key_data.len() as u16).to_be_bytes());
         body.extend_from_slice(key_data);
         if let Some(kck) = mic_key {
-            let m = esp_periph::crypto::hmac_sha1(kck, &body);
-            body[mic_at..mic_at + 16].copy_from_slice(&m[..16]);
+            if self.cfg.auth == ApAuth::SaeH2e {
+                let m = sae_ap::aes_cmac(kck,&body);
+                body[mic_at..mic_at+16].copy_from_slice(&m[..16]);
+            } else {
+                let m = esp_periph::crypto::hmac_sha1(kck, &body);
+                body[mic_at..mic_at + 16].copy_from_slice(&m[..16]);
+            }
         }
         let sta = self.sta; let bssid = self.cfg.bssid;
         let mut f = self.hdr(0x0208, &sta, &bssid);                      // data, from-DS
@@ -266,6 +311,7 @@ impl VirtualAp {
 
     /// Handle an EAPOL-Key frame from the station (messages 2 and 4 of the handshake).
     fn on_eapol(&mut self, body: &[u8], now_us: u64) {
+        if self.cfg.auth == ApAuth::SaeH2e { self.on_sae_eapol(body,now_us); return; }
         if body.len() < 99 || body[1] != 3 { return; }
         // the MIC covers exactly the 802.1X frame; the 802.11 payload can carry trailing bytes
         let n = 4 + u16::from_be_bytes([body[2], body[3]]) as usize;
@@ -323,6 +369,7 @@ impl VirtualAp {
     /// Wrap an Ethernet frame from the network backend into an 802.11 data frame from the DS.
     pub fn data_from_ds(&mut self, eth: &[u8]) -> Option<Vec<u8>> {
         if self.state != StaState::Associated || eth.len() < 14 { return None; }
+        if self.cfg.auth == ApAuth::SaeH2e && self.wpa.state != WpaState::Installed { return None; }
         let mut dst = [0u8; 6]; dst.copy_from_slice(&eth[0..6]); let mut src = [0u8; 6]; src.copy_from_slice(&eth[6..12]);
         let bssid = self.cfg.bssid;
         // Once the keys are installed the frame must look encrypted: protected bit, CCMP header and
@@ -451,12 +498,21 @@ impl StationLink {
     pub fn tx_dropped(&self) -> u64 { self.tx_dropped }
 
     /// The station sent `frame` at `now_us`: the access point hears it, and what it passes on as
-    /// data goes to the network or the relay.
+    /// data goes to the network or the relay. `frame` excludes the MAC FCS.
     pub fn station_tx(&mut self, frame: &[u8], now_us: u64) {
         self.tx_frames += 1;
         let Some(ap) = &mut self.ap else { return };
         let Some(eth) = ap.on_station_tx(frame, now_us).and_then(|data| data_to_eth(&data)) else { return };
         if !self.relay || (eth.len() <= RELAY_FRAME_MAX && self.eth_tx.len() < RELAY_QUEUE) { self.eth_tx.push(eth); } else { self.tx_dropped += 1; }
+    }
+
+    /// SDK TX DMA lengths include four bytes reserved for the hardware FCS.
+    /// That trailer is not a management-body IE (notably for SAE Commit).
+    /// This contract is explicit: callers already holding a frame without FCS
+    /// keep using station_tx. Do not recognize a particular placeholder value.
+    pub fn station_tx_with_fcs(&mut self, frame: &[u8], now_us: u64) {
+        let Some(length)=frame.len().checked_sub(4) else { self.tx_frames+=1; self.tx_dropped+=1; return; };
+        self.station_tx(&frame[..length],now_us);
     }
 
     /// True while the last received frame's airtime lasts: no frame is due, whatever the ring holds.

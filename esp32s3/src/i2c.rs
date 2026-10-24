@@ -103,13 +103,22 @@ impl I2cDevice for Tca9554 {
 
 /// Touch state shared between a board (UI) and its touch controller.
 #[derive(Default, Debug, Clone, Copy)]
-pub struct TouchState { pub down: bool, pub x: u16, pub y: u16, pub seen: bool, pub release_pending: bool }
+pub struct TouchState { pub home: bool, pub down: bool, pub x: u16, pub y: u16, pub seen: bool, pub release_pending: bool, gt911: Option<Gt911Reports> }
 impl TouchState {
     pub fn update(&mut self, x: u16, y: u16, down: bool) {
         self.x = x; self.y = y;
+        if self.gt911.is_some() { self.down = down; self.seen = false; self.release_pending = false; self.publish_gt911(down); return; }
         if down { self.down = true; self.seen = false; self.release_pending = false; }
         else if self.seen { self.down = false; }
         else { self.release_pending = true; }
+    }
+    pub fn set_home(&mut self, down: bool) {
+        self.home = down;
+        if self.gt911.is_some() { self.publish_gt911(self.down); }
+    }
+    fn publish_gt911(&mut self, down: bool) {
+        let report = Gt911Report { home: self.home, down, x: self.x, y: self.y };
+        self.gt911.as_mut().unwrap().publish(report);
     }
     /// Keep even a short tap readable until the guest has observed the press once.
     fn observe(&mut self) {
@@ -118,21 +127,64 @@ impl TouchState {
     }
 }
 
+#[derive(Default, Debug, Clone, Copy)]
+struct Gt911Report { home: bool, down: bool, x: u16, y: u16 }
+impl Gt911Report {
+    // Existing host-abort sentinel, NOT a physical GT911 sensor report.
+    fn modeled_abort(self) -> bool { self.down && self.x == 480 && self.y == 800 }
+}
+#[derive(Default, Debug, Clone, Copy)]
+struct Gt911Reports {
+    ready: Option<Gt911Report>, latest: Option<Gt911Report>, abort: Option<Gt911Report>,
+}
+impl Gt911Reports {
+    fn publish(&mut self, report: Gt911Report) {
+        if let Some(ready) = self.ready {
+         if report.modeled_abort() {
+            // Bounded modeled cancellation barrier: unread valid -> abort -> UP
+            // must not become a valid tap. This is not a general report FIFO.
+            if !ready.modeled_abort() { self.abort = Some(report); }
+            self.latest = None;
+         } else { self.latest = Some(report); }
+        } else { self.ready = Some(report); }
+    }
+    fn clear(&mut self) { self.ready = self.abort.take().or_else(|| self.latest.take()); }
+}
+
 /// Goodix GT911 capacitive touch controller: 16-bit register addresses; product ID at 0x8140,
 /// config at 0x8047.., status + up to 5 points at 0x814E...
 pub struct Gt911 { addr: u16, phase: u8, touch: std::sync::Arc<std::sync::Mutex<TouchState>>, pub reads: u64, w: u16, h: u16 }
 impl Gt911 {
-    pub fn new(touch: std::sync::Arc<std::sync::Mutex<TouchState>>, w: u16, h: u16) -> Self { Gt911 { addr: 0, phase: 0, touch, reads: 0, w, h } }
+    pub fn new(touch: std::sync::Arc<std::sync::Mutex<TouchState>>, w: u16, h: u16) -> Self {
+        {
+            let mut state = touch.lock().unwrap();
+            if state.gt911.is_none() {
+                let ready = (state.down || state.home).then_some(Gt911Report { down: state.down, home: state.home, x: state.x, y: state.y });
+                let latest = state.release_pending.then_some(Gt911Report { down: false, home: state.home, x: state.x, y: state.y });
+                // Migrate a generic unread short press without losing its release.
+                // The physical latest state is already UP, even while ready is DOWN.
+                if state.release_pending { state.down = false; }
+                state.seen = false; state.release_pending = false;
+                state.gt911 = Some(Gt911Reports { ready, latest, ..Default::default() });
+            }
+        }
+        Gt911 { addr: 0, phase: 0, touch, reads: 0, w, h }
+    }
     fn reg(&self, a: u16) -> u8 {
-        let mut tl = self.touch.lock().unwrap();
-        if a == 0x814e { tl.observe(); }
-        let t = *tl;
+        // GOODIX GT911 Programming Guide Rev.10 (2017-07-26), section5 p28:
+        // unread ready coordinates remain unchanged until host clears814e.
+        // https://www.lcd-module.de/fileadmin/eng/pdf/zubehoer/GT911_Programming_Guide_Rev.10.pdf
+        // Latest-state promotion models no scan/INT timing or physical sampling.
+        let tl = self.touch.lock().unwrap();
+        let report = tl.gt911.as_ref().unwrap().ready;
+        let t = report.unwrap_or_default();
         match a {
             0x8140 => b'9', 0x8141 => b'1', 0x8142 => b'1', 0x8143 => 0, 0x8144 => 0x60, 0x8145 => 0x10,      // "911", firmware 0x1060
             0x8047 => 0x41,                                                                                     // config version
             0x8048 => self.w as u8, 0x8049 => (self.w >> 8) as u8, 0x804a => self.h as u8, 0x804b => (self.h >> 8) as u8,
             0x804c => 5,                                                                                        // touch number
-            0x814e => 0x80 | t.down as u8,                                                                      // buffer ready + count
+            // FreeInk SDK69937018 InputManager.cpp2273: GT911 capacitive Home is status0x10.
+            0x814e => (u8::from(report.is_some()) << 7) | (u8::from(t.home) << 4) | t.down as u8,                                                                      // buffer ready + count
             0x814f => 0, 0x8150 => t.x as u8, 0x8151 => (t.x >> 8) as u8, 0x8152 => t.y as u8, 0x8153 => (t.y >> 8) as u8, 0x8154 => 20, 0x8155 => 0, 0x8156 => 0,
             _ => 0,
         }
@@ -140,7 +192,7 @@ impl Gt911 {
 }
 impl I2cDevice for Gt911 {
     fn start(&mut self, read: bool) -> bool { if !read { self.phase = 0; } true }
-    fn write(&mut self, b: u8) -> bool { match self.phase { 0 => { self.addr = (b as u16) << 8; self.phase = 1; } 1 => { self.addr |= b as u16; self.phase = 2; } _ => { self.addr = self.addr.wrapping_add(1); } } true }
+    fn write(&mut self, b: u8) -> bool { match self.phase { 0 => { self.addr = (b as u16) << 8; self.phase = 1; } 1 => { self.addr |= b as u16; self.phase = 2; } _ => { if self.addr == 0x814e && b == 0 { self.touch.lock().unwrap().gt911.as_mut().unwrap().clear(); } self.addr = self.addr.wrapping_add(1); } } true }
     fn read(&mut self) -> u8 { let v = self.reg(self.addr); self.addr = self.addr.wrapping_add(1); self.reads += 1; v }
 }
 
@@ -391,4 +443,76 @@ mod qmi8658_tests {
         assert_eq!(at(&mut imu, 12.0003, 0x2e, 1), [0x00]);
         assert_eq!(at(&mut imu, 12.0041, 0x2e, 1), [0x03]);
     }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+    fn setup() -> (std::sync::Arc<std::sync::Mutex<TouchState>>, Gt911) {
+        let touch = std::sync::Arc::new(std::sync::Mutex::new(TouchState::default()));
+        let gt = Gt911::new(touch.clone(), 480, 800); (touch, gt)
+    }
+    fn address(gt: &mut Gt911, at: u16) { gt.start(false); gt.write((at >> 8) as u8); gt.write(at as u8); }
+    fn packet(gt: &mut Gt911) -> [u8; 7] {
+        address(gt, 0x814e); gt.start(true); std::array::from_fn(|_| gt.read())
+    }
+    fn write(gt: &mut Gt911, at: u16, value: u8) { address(gt, at); gt.write(value); }
+    fn point(p: [u8; 7]) -> (u8, u16, u16) { (p[0], u16::from_le_bytes([p[2],p[3]]), u16::from_le_bytes([p[4],p[5]])) }
+    #[test]
+    fn unread_report_retains_down_and_promotes_latest_only_after_zero_status_ack() {
+        let (touch, mut gt) = setup(); assert_eq!(packet(&mut gt)[0], 0);
+        touch.lock().unwrap().update(244,787,true);
+        touch.lock().unwrap().update(244,757,true);
+        assert_eq!(point(packet(&mut gt)), (0x81,244,787));
+        write(&mut gt,0x814e,1); write(&mut gt,0x814f,0);
+        assert_eq!(point(packet(&mut gt)), (0x81,244,787));
+        write(&mut gt,0x814e,0); assert_eq!(point(packet(&mut gt)),(0x81,244,757));
+        touch.lock().unwrap().update(244,538,false);
+        assert_eq!(point(packet(&mut gt)),(0x81,244,757));
+        write(&mut gt,0x814e,0);assert_eq!(point(packet(&mut gt)),(0x80,244,538));
+        write(&mut gt,0x814e,0);assert_eq!(packet(&mut gt)[0],0);
+    }
+    #[test]
+    fn coordinate_and_home_packet_stays_atomic_across_host_updates_between_bytes() {
+        let (touch, mut gt) = setup(); touch.lock().unwrap().update(479,799,true);
+        address(&mut gt,0x814e);gt.start(true);let mut p=[0;7];p[0]=gt.read();
+        {let mut t=touch.lock().unwrap();t.set_home(true);t.update(1,2,false);}
+        for byte in &mut p[1..] {*byte=gt.read();}
+        assert_eq!(point(p),(0x81,479,799));assert_eq!(packet(&mut gt),p);
+        write(&mut gt,0x814e,0);assert_eq!(point(packet(&mut gt)),(0x90,1,2));
+        touch.lock().unwrap().set_home(false);assert_eq!(packet(&mut gt)[0],0x90);
+        write(&mut gt,0x814e,0);assert_eq!(packet(&mut gt)[0],0x80);
+    }
+    #[test]
+    fn modeled_abort_is_not_erased_by_release_behind_an_unread_valid_report() {
+        let (touch, mut gt)=setup();
+        {let mut t=touch.lock().unwrap();t.update(244,787,true);t.update(480,800,true);t.update(480,800,false);}
+        assert_eq!(point(packet(&mut gt)),(0x81,244,787));
+        write(&mut gt,0x814e,0);assert_eq!(point(packet(&mut gt)),(0x81,480,800));
+        write(&mut gt,0x814e,0);assert_eq!(point(packet(&mut gt)),(0x80,480,800));
+        write(&mut gt,0x814e,0);assert_eq!(packet(&mut gt)[0],0);
+    }
+    #[test]
+    fn ordinary_pending_motion_is_latest_state_not_fifo_and_home_only_report_is_ready() {
+        let (touch, mut gt)=setup();
+        {let mut t=touch.lock().unwrap();t.update(3,700,true);for y in 0..500 {t.update(3,y,true);}t.update(3,499,false);}
+        assert_eq!(point(packet(&mut gt)),(0x81,3,700));
+        write(&mut gt,0x814e,0);assert_eq!(point(packet(&mut gt)),(0x80,3,499));
+        write(&mut gt,0x814e,0);assert_eq!(packet(&mut gt)[0],0);
+        touch.lock().unwrap().set_home(true);assert_eq!(packet(&mut gt)[0],0x90);
+    }
+    #[test]
+    fn attachment_migrates_generic_unread_short_press_and_its_release() {
+        let touch=std::sync::Arc::new(std::sync::Mutex::new(TouchState::default()));
+        {let mut t=touch.lock().unwrap();t.update(12,34,true);t.update(12,34,false);assert!(t.release_pending);}
+        let mut gt=Gt911::new(touch.clone(),480,800);
+        assert_eq!(point(packet(&mut gt)),(0x81,12,34));
+        // Attaching another handle must not reset ready or pending custody.
+        let mut other=Gt911::new(touch.clone(),480,800);
+        assert_eq!(point(packet(&mut other)),(0x81,12,34));
+        write(&mut gt,0x814e,0);assert_eq!(point(packet(&mut other)),(0x80,12,34));
+        write(&mut other,0x814e,0);assert_eq!(packet(&mut gt)[0],0);
+        touch.lock().unwrap().set_home(true);assert_eq!(packet(&mut gt)[0],0x90);
+    }
+
 }

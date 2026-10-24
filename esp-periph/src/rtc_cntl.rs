@@ -15,6 +15,8 @@ pub fn reset_cause_name(c: u32) -> &'static str {
 /// WDTCONFIG0..WDTWPROTECT live at 0x98..0xb0 on S3 and 0x90..0xa8 on C3.
 /// `esp_restart()` on ESP-IDF 5.x arms this watchdog and spins until it resets the chip.
 pub struct RtcCntl { pub ram: RegRam, pub slow_ticks: u64, pub time_latch: u64, pub sw_reset: bool, pub reset_cause: u32,
+                     /// S3 deep sleep: digital cores/peripherals are off; RTC time and wake inputs remain live.
+                     pub sleeping: bool,
                      wdt_base: u32, wdt_count: u64, wdt_stage: usize, wdt_unlocked: bool,
                      /// S3 only: the SENS block at +0x800 converts on SAR_MEAS1_START (see `sens_meas`); the chip refreshes
                      /// `now_cycles` before each access so a waveform source is sampled at the right emulated time.
@@ -26,6 +28,8 @@ impl RtcCntl {
     pub fn wdt_tick(&mut self, ticks: u64) {
         let conf0 = self.ram.read(self.wdt_base);
         if conf0 & (1 << 31) == 0 { return; }
+        // v6.1 rtc_cntl_reg.h: WDT_PAUSE_IN_SLP bit9, reset default1.
+        if self.sleeping && conf0 & (1 << 9) != 0 { return; }
         self.wdt_count += ticks;
         while self.wdt_stage < 4 {
             let timeout = self.ram.read(self.wdt_base + 4 + 4 * self.wdt_stage as u32) as u64;
@@ -44,10 +48,10 @@ impl RtcCntl {
         }
         if self.wdt_stage >= 4 { self.wdt_stage = 0; }
     }
-    pub fn new() -> Self { let mut r = Self::with_wdt_base(0x98); r.sens_adc = true; r }
+    pub fn new() -> Self { let mut r = Self::with_wdt_base(0x98); r.sens_adc = true; r.ram.write(0x98, 1 << 9); r }
     pub fn new_c3() -> Self { Self::with_wdt_base(0x90) }
     pub fn with_wdt_base(wdt_base: u32) -> Self {
-        let mut r = RtcCntl { ram: RegRam::new(), slow_ticks: 0, time_latch: 0, sw_reset: false, reset_cause: RST_POWERON, wdt_base, wdt_count: 0, wdt_stage: 0, wdt_unlocked: false,
+        let mut r = RtcCntl { ram: RegRam::new(), slow_ticks: 0, time_latch: 0, sw_reset: false, reset_cause: RST_POWERON, sleeping: false, wdt_base, wdt_count: 0, wdt_stage: 0, wdt_unlocked: false,
                               sens_adc: false, analog: crate::analog::AnalogInputs::new(240_000_000), now_cycles: 0 };
         r.ram.write(0x38, 1 | (1 << 6));           // RESET_STATE: reset cause POWERON for both CPUs
         r.ram.write(0x74, 0);                        // CLK_CONF
@@ -67,11 +71,47 @@ impl RtcCntl {
         match off {
             0x0 => { if v & (1 << 31) != 0 { self.request_reset(RST_SW_SYS); } else if v & (1 << 5) != 0 { self.request_reset(RST_SW_CPU); } self.ram.write(off, v & !((1 << 31) | (1 << 5))); }   // OPTIONS0.SW_SYS_RST / SW_PROCPU_RST
             0xc => { if v & (1 << 31) != 0 { self.time_latch = self.slow_ticks; } self.ram.write(off, v); }
+            // ESP-IDF v6.1 esp32s3 rtc_cntl_reg.h STATE0.SLEEP_EN and
+            // DIG_PWC.DG_WRAP_PD_EN. Light sleep and C3 use different contracts.
+            0x18 if self.sens_adc => {
+                self.ram.write(off, v);
+                if v & (1 << 31) != 0 && self.ram.read(0x90) & (1 << 31) != 0 { self.sleeping = true; }
+            }
+            0x4c if self.sens_adc => { self.ram.write(0x44, self.ram.read(0x44) & !v); }
+            0xe0 if self.sens_adc => {
+                if v & (1 << 22) != 0 { self.ram.write(0xe4, 0); }
+                self.ram.write(off, v & !(1 << 22));
+            }
             0x80c | 0x830 if self.sens_adc => self.sens_meas(off, v),
             _ if off == wdt + 0x18 => { self.wdt_unlocked = v == 0x50D8_3AA1; self.ram.write(off, v); }
             _ if (wdt..=wdt + 0x10).contains(&off) => { if self.wdt_unlocked { if off == wdt && (v ^ self.ram.read(wdt)) & (1 << 31) != 0 { self.wdt_count = 0; self.wdt_stage = 0; } self.ram.write(off, v); } }
             _ if off == wdt + 0x14 => { if self.wdt_unlocked && v & (1 << 31) != 0 { self.wdt_count = 0; self.wdt_stage = 0; } }   // WDTFEED
             _ => self.ram.write(off, v),
+        }
+    }
+    pub fn sleep_deadline_ticks(&self) -> Option<u64> {
+        if !self.sleeping || (self.ram.read(0x3c) >> 15) & (1 << 3) == 0 { return None; }
+        let at = u64::from(self.ram.read(4)) | (u64::from(self.ram.read(8) & 0xffff) << 32);
+        Some(at.saturating_sub(self.slow_ticks))
+    }
+    /// S3 RTC EXT1 / timer wake decisions, from the same v6.1 register header.
+    /// `gpio_levels` is the resolved external/pull level, never a host shortcut.
+    pub fn check_wakeup(&mut self, gpio_levels: u64) {
+        if !self.sleeping || self.sw_reset { return; }
+        let enabled = (self.ram.read(0x3c) >> 15) & 0x1ffff;
+        let pins = self.ram.read(0xe0) & 0x3fffff;
+        let high = self.ram.read(0x64) & (1 << 31) != 0;
+        let active = pins & if high { gpio_levels as u32 } else { !(gpio_levels as u32) };
+        let deadline = u64::from(self.ram.read(4)) | (u64::from(self.ram.read(8) & 0xffff) << 32);
+        let mut cause = 0;
+        if enabled & (1 << 1) != 0 && active != 0 { cause |= 1 << 1; self.ram.write(0xe4, active); }
+        if enabled & (1 << 3) != 0 && self.slow_ticks >= deadline { cause |= 1 << 3; }
+        if cause != 0 {
+            self.ram.write(0x130, cause);
+            self.ram.write(0x44, self.ram.read(0x44) | 1);
+            self.ram.write(0x18, self.ram.read(0x18) & !(1 << 31));
+            self.sleeping = false;
+            self.request_reset(5); // RTC_CNTL_RESET_CAUSE: DEEPSLEEP.
         }
     }
 }
