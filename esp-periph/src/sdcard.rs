@@ -46,6 +46,9 @@ pub const R1_ADDRESS_ERROR: u32 = 1 << 30;
 pub const R1_BLOCK_LEN_ERROR: u32 = 1 << 29;
 pub const R1_WP_VIOLATION: u32 = 1 << 26;
 pub const R1_ILLEGAL_COMMAND: u32 = 1 << 22;
+/// SD Physical Layer R1 ERROR, bit 19: an unspecified card-side operation error.
+#[cfg(feature = "sparse-sd")]
+pub const R1_ERROR: u32 = 1 << 19;
 // IDF v6.1 components/sdmmc/include/sd_protocol_defs.h MMC_R1_APP_CMD.
 pub const R1_APP_CMD: u32 = 1 << 5;
 
@@ -55,6 +58,11 @@ pub const R1_APP_CMD: u32 = 1 << 5;
 pub struct SdCard {
     /// 512-byte sectors; padded at attach to the CSD-declared capacity.
     image: Vec<u8>,
+    /// Absent for the existing dense image. Sparse cards retain only allocated sectors.
+    #[cfg(feature = "sparse-sd")]
+    sparse: Option<SparseImage>,
+    #[cfg(feature = "sparse-sd")]
+    data_hint: Option<u32>,
     capacity_blocks: u32,
     high_capacity: bool,
     csd: [u32; 4],
@@ -70,11 +78,56 @@ pub struct SdCard {
     /// modeled card write-protect switch (defaults off; exposed for the board layer)
     write_protected: bool,
     /// read/write stream cursor for data phases (byte offset into `image`)
-    stream: u32,
+    stream: StreamOffset,
     stream_left: u32,
     register_data: Vec<u8>,
     /// bytes written since attach (the host's save-back hint for a disposable fixture)
     dirty_bytes: u32,
+}
+
+/// A bounded sparse SDHC image. An omitted sector reads as zero; writes allocate
+/// sectors before the card accepts a command, so exhaustion never silently
+/// acknowledges data that was not retained.
+#[cfg(feature = "sparse-sd")]
+type StreamOffset = u64;
+#[cfg(not(feature = "sparse-sd"))]
+type StreamOffset = u32;
+
+#[cfg(feature = "sparse-sd")]
+struct SparseImage {
+    sectors: std::collections::HashMap<u32, Vec<u8>>,
+    limit: usize,
+    reserved: Vec<(u32, Vec<u8>)>,
+}
+
+#[cfg(feature = "sparse-sd")]
+impl SparseImage {
+    fn reserve_write(&mut self, start: u32, count: u32) -> bool {
+        self.reserved.clear();
+        let missing: Vec<u32> = (start..start + count)
+            .filter(|sector| !self.sectors.contains_key(sector)).collect();
+        if missing.len() > self.limit.saturating_sub(self.sectors.len()) ||
+            self.sectors.try_reserve(missing.len()).is_err() { return false; }
+        let mut allocated = Vec::new();
+        if allocated.try_reserve_exact(missing.len()).is_err() { return false; }
+        for sector in missing {
+            let mut bytes = Vec::new();
+            if bytes.try_reserve_exact(512).is_err() { return false; }
+            bytes.resize(512, 0);
+            allocated.push((sector, bytes));
+        }
+        self.reserved = allocated;
+        true
+    }
+
+    fn commit_sector(&mut self, sector: u32) -> Option<&mut Vec<u8>> {
+        if !self.sectors.contains_key(&sector) {
+            let at = self.reserved.iter().position(|(number, _)| *number == sector)?;
+            let (number, data) = self.reserved.swap_remove(at);
+            self.sectors.insert(number, data);
+        }
+        self.sectors.get_mut(&sector)
+    }
 }
 impl SdCard {
     /// Attach a card whose image is `bytes` (any length, including empty; padded up to the
@@ -86,13 +139,46 @@ impl SdCard {
         let mut image = bytes;
         image.resize(capacity_blocks as usize * 512, 0);
         SdCard {
-            image, capacity_blocks, high_capacity,
+            image, #[cfg(feature = "sparse-sd")] sparse: None, #[cfg(feature = "sparse-sd")] data_hint: None, capacity_blocks, high_capacity,
             csd: build_csd(capacity_blocks, high_capacity),
             cid: build_cid(),
             rca: 0, state: State::Idle, app_next: false, init_pending: true,
             powered: true, write_protected: false, stream: 0, stream_left: 0, register_data: Vec::new(), dirty_bytes: 0,
         }
     }
+
+    /// Attach a zero-filled SDHC geometry with a caller-specified sector budget.
+    /// Capacity must be exactly representable in the CSD v2 geometry. The budget
+    /// includes seeded and subsequently written sectors; zero is permitted.
+    #[cfg(feature = "sparse-sd")]
+    pub fn sparse(capacity_blocks: u32, sector_limit: usize) -> Option<SdCard> {
+        if capacity_blocks <= 4_194_304 || !capacity_blocks.is_multiple_of(1024) { return None; }
+        Some(SdCard {
+            image: Vec::new(), sparse: Some(SparseImage { sectors: Default::default(), limit: sector_limit, reserved: Vec::new() }), data_hint: None,
+            capacity_blocks, high_capacity: true, csd: build_csd(capacity_blocks, true), cid: build_cid(),
+            rca: 0, state: State::Idle, app_next: false, init_pending: true,
+            powered: true, write_protected: false, stream: 0, stream_left: 0, register_data: Vec::new(), dirty_bytes: 0,
+        })
+    }
+
+    /// Seed one sector before boot. Refuses duplicate, out-of-range, or unfunded
+    /// sectors without replacing existing data.
+    #[cfg(feature = "sparse-sd")]
+    pub fn seed_sector(&mut self, sector: u32, bytes: &[u8]) -> bool {
+        if sector >= self.capacity_blocks || bytes.len() != 512 { return false; }
+        let Some(sparse) = self.sparse.as_mut() else { return false; };
+        if sparse.sectors.contains_key(&sector) || !sparse.reserve_write(sector, 1) { return false; }
+        sparse.commit_sector(sector).expect("reserved sector").copy_from_slice(bytes);
+        true
+    }
+
+    /// Sparse cards do not have a complete contiguous snapshot.
+    #[cfg(feature = "sparse-sd")]
+    pub fn dense_image(&self) -> Option<&[u8]> {
+        if self.sparse.is_some() { None } else { Some(&self.image) }
+    }
+    #[cfg(feature = "sparse-sd")]
+    pub fn is_sparse(&self) -> bool { self.sparse.is_some() }
 
     /// Modeled card power switch (the X4's GPIO5, active-low, gates the card's supply).
     /// Power-off forgets initialization — the card falls back to idle state, like a real
@@ -103,6 +189,8 @@ impl SdCard {
             self.app_next = false;
             self.init_pending = true;
             self.stream_left = 0;
+            #[cfg(feature = "sparse-sd")]
+            if let Some(sparse) = self.sparse.as_mut() { sparse.reserved.clear(); }
         }
         self.powered = on;
     }
@@ -111,10 +199,21 @@ impl SdCard {
     pub fn write_protected(&self) -> bool { self.write_protected }
     pub fn capacity_blocks(&self) -> u32 { self.capacity_blocks }
     pub fn high_capacity(&self) -> bool { self.high_capacity }
-    /// The image as backed (padded to CSD capacity); the host may persist it.
-    pub fn image(&self) -> &[u8] { &self.image }
+    /// The dense image as backed (padded to CSD capacity); the host may persist it.
+    ///
+    /// # Panics
+    /// With `sparse-sd`, a sparse card has no complete contiguous image. Use
+    /// `dense_image` to check before attempting an existing dense save-back.
+    pub fn image(&self) -> &[u8] {
+        #[cfg(feature = "sparse-sd")]
+        assert!(self.sparse.is_none(), "sparse card has no complete dense image");
+        &self.image
+    }
     /// Bytes written since attach (the host's save-back hint for a disposable fixture).
     pub fn dirty_bytes(&self) -> u32 { self.dirty_bytes }
+    #[cfg(feature = "sparse-sd")]
+    fn mark_dirty(&mut self, n: u32) { self.dirty_bytes = self.dirty_bytes.saturating_add(n); }
+    #[cfg(not(feature = "sparse-sd"))]
     fn mark_dirty(&mut self, n: u32) { self.dirty_bytes += n; }
 
     /// Test-only construction with an explicit logical geometry: the real card fields, CSD and
@@ -125,7 +224,7 @@ impl SdCard {
     #[cfg(test)]
     pub(crate) fn for_test_geometry(image: Vec<u8>, capacity_blocks: u32, high_capacity: bool) -> SdCard {
         SdCard {
-            image, capacity_blocks, high_capacity,
+            image, #[cfg(feature = "sparse-sd")] sparse: None, #[cfg(feature = "sparse-sd")] data_hint: None, capacity_blocks, high_capacity,
             csd: build_csd(capacity_blocks, high_capacity),
             cid: build_cid(),
             rca: 0, state: State::Idle, app_next: false, init_pending: true,
@@ -135,10 +234,20 @@ impl SdCard {
 
     /// Run one command. `index` is the raw command number (app-command pairing via CMD55 is the
     /// card's own state). Called only while the card is powered.
+    #[cfg(feature = "sparse-sd")]
+    pub fn command_with_data_len(&mut self, index: u8, arg: u32, bytes: u32) -> CardReply {
+        self.data_hint = Some(bytes);
+        let result = self.command(index, arg);
+        self.data_hint = None;
+        result
+    }
+
     pub fn command(&mut self, index: u8, arg: u32) -> CardReply {
         if !self.powered {
             return CardReply::silence();
         }
+        #[cfg(feature = "sparse-sd")]
+        if let Some(sparse) = self.sparse.as_mut() { sparse.reserved.clear(); }
         let app = core::mem::take(&mut self.app_next);
         let r1 = |state: State, extra: u32| [extra | (state.bits() << 9) |
             if matches!(state, State::Tran | State::Stby) { 1 << 8 } else { 0 }, 0, 0, 0];
@@ -233,10 +342,18 @@ impl SdCard {
                     // caps the transfer with BYTCNT), so a stream that would cross the end
                     // carries fewer bytes and the transfer still completes with DTO.
                     let len = if index == 17 { 512 } else { 4096 };
+                    #[cfg(feature = "sparse-sd")]
+                    let len = if self.sparse.is_some() && index == 18 {
+                        self.data_hint.unwrap_or(len).min(65_536)
+                    } else { len };
                     let offset = u64::from(sector) * 512;
-                    let len =
-                        (len as u64).min(self.image.len() as u64 - offset) as u32;
-                    self.stream = offset as u32;
+                    #[cfg(feature = "sparse-sd")]
+                    let media_len = if self.sparse.is_some() { u64::from(self.capacity_blocks) * 512 } else { self.image.len() as u64 };
+                    #[cfg(feature = "sparse-sd")]
+                    let len = (len as u64).min(media_len.saturating_sub(offset)) as u32;
+                    #[cfg(not(feature = "sparse-sd"))]
+                    let len = (len as u64).min(self.image.len() as u64 - offset) as u32;
+                    self.stream = offset as StreamOffset;
                     self.stream_left = len;
                     CardReply { response: Some(r1(self.state, 0)), read_bytes: Some(len), accept_write: false }
                 }
@@ -249,8 +366,25 @@ impl SdCard {
                 }
                 match self.sector_of(arg) {
                     Ok(sector) => {
-                        self.stream = sector * 512;
-                        self.stream_left = if index == 24 { 512 } else { 4096 };
+                        #[cfg(feature = "sparse-sd")]
+                        let blocks = if index == 24 { 1 } else if self.sparse.is_some() { 128 } else { 8 };
+                        #[cfg(feature = "sparse-sd")]
+                        let max_bytes = blocks.min(self.capacity_blocks - sector) * 512;
+                        #[cfg(feature = "sparse-sd")]
+                        if let Some(sparse) = self.sparse.as_mut() {
+                            let requested = self.data_hint.unwrap_or(max_bytes);
+                            if requested > max_bytes { return CardReply::response(r1(self.state, R1_OUT_OF_RANGE)); }
+                            let count = requested.div_ceil(512);
+                            if !sparse.reserve_write(sector, count) { return CardReply::response(r1(self.state, R1_ERROR)); }
+                        }
+                        #[cfg(feature = "sparse-sd")]
+                        { self.stream = u64::from(sector) * 512; }
+                        #[cfg(not(feature = "sparse-sd"))]
+                        { self.stream = sector * 512; }
+                        #[cfg(feature = "sparse-sd")]
+                        { self.stream_left = if self.sparse.is_some() { self.data_hint.unwrap_or(max_bytes) } else if index == 24 { 512 } else { 4096 }; }
+                        #[cfg(not(feature = "sparse-sd"))]
+                        { self.stream_left = if index == 24 { 512 } else { 4096 }; }
                         CardReply { response: Some(r1(self.state, 0)), read_bytes: None, accept_write: true }
                     }
                     Err(word) => CardReply::response(r1(self.state, word)),
@@ -274,9 +408,24 @@ impl SdCard {
             self.stream_left -= take as u32;
             return self.register_data.drain(..take).collect();
         }
+        #[cfg(feature = "sparse-sd")]
+        if let Some(sparse) = &self.sparse {
+            let mut out = vec![0; take];
+            let mut done = 0;
+            while done < take {
+                let pos = self.stream + done as u64;
+                let sector = (pos / 512) as u32; let offset = (pos % 512) as usize;
+                let n = (512 - offset).min(take - done);
+                if let Some(bytes) = sparse.sectors.get(&sector) { out[done..done+n].copy_from_slice(&bytes[offset..offset+n]); }
+                done += n;
+            }
+            self.stream += take as StreamOffset;
+            self.stream_left -= take as u32;
+            return out;
+        }
         let at = self.stream as usize;
         let out = self.image.get(at..at + take).map(<[u8]>::to_vec).unwrap_or_default();
-        self.stream += take as u32;
+        self.stream += take as StreamOffset;
         self.stream_left -= take as u32;
         out
     }
@@ -284,9 +433,24 @@ impl SdCard {
     pub fn write_chunk(&mut self, bytes: &[u8]) {
         let take = (bytes.len() as u32).min(self.stream_left) as usize;
         if take == 0 { return; }
+        #[cfg(feature = "sparse-sd")]
+        if let Some(sparse) = &mut self.sparse {
+            let mut done = 0;
+            while done < take {
+                let pos = self.stream + done as u64;
+                let sector = (pos / 512) as u32; let offset = (pos % 512) as usize;
+                let n = (512 - offset).min(take - done);
+                sparse.commit_sector(sector).expect("write sectors reserved before command")[offset..offset+n].copy_from_slice(&bytes[done..done+n]);
+                done += n;
+            }
+            self.stream += take as StreamOffset;
+            self.stream_left -= take as u32;
+            self.mark_dirty(take as u32);
+            return;
+        }
         let at = self.stream as usize;
         if let Some(dst) = self.image.get_mut(at..at + take) { dst.copy_from_slice(&bytes[..take]); }
-        self.stream += take as u32;
+        self.stream += take as StreamOffset;
         self.stream_left -= take as u32;
         self.mark_dirty(take as u32);
     }
@@ -432,6 +596,106 @@ pub(crate) fn crc7(data: &[u8]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn sparse_card_preserves_high_addresses_and_refuses_unfunded_writes() {
+        assert!(SdCard::sparse(4_194_304, 1).is_none());
+        assert!(SdCard::sparse(62_500_001, 1).is_none());
+        let blocks = 62_500_864; // CSD-v2 aligned, roughly the physical card's scale.
+        let mut card = SdCard::sparse(blocks, 3).unwrap();
+        assert!(card.dense_image().is_none());
+        let high = 20_000_000; // 10.24 GB byte offset, beyond the former u32 cursor.
+        assert!(card.seed_sector(high, &[0xa5; 512]));
+        assert!(!card.seed_sector(high, &[0; 512]));
+        assert!(!card.seed_sector(blocks, &[0; 512]));
+        card.state = State::Tran;
+        let read = card.command(17, high);
+        assert_eq!(read.read_bytes, Some(512));
+        assert_eq!(card.read_chunk(31), vec![0xa5; 31]);
+        assert_eq!(card.read_chunk(481), vec![0xa5; 481]);
+        assert_eq!(card.command(17, high + 1).read_bytes, Some(512));
+        assert_eq!(card.read_chunk(512), vec![0; 512]);
+        let write = card.command(24, high + 1);
+        assert!(write.accept_write);
+        card.write_chunk(&[0x37; 200]); card.write_chunk(&[0x6c; 312]);
+        assert_eq!(card.command(17, high + 1).read_bytes, Some(512));
+        let data = card.read_chunk(512);
+        assert_eq!(&data[..200], &[0x37; 200]); assert_eq!(&data[200..], &[0x6c; 312]);
+        // A multi-block write reserves its complete modeled transfer before
+        // acceptance. Exhaustion leaves both existing data and custody intact.
+        let refused = card.command(25, high + 2);
+        assert!(!refused.accept_write);
+        assert_ne!(refused.response.unwrap()[0] & R1_ERROR, 0);
+        assert_eq!(card.command(17, high).read_bytes, Some(512));
+        assert_eq!(card.read_chunk(512), vec![0xa5; 512]);
+        assert_ne!(card.command(17, blocks).response.unwrap()[0] & R1_OUT_OF_RANGE, 0);
+    }
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn sparse_multi_block_stream_crosses_sectors_and_stops_at_media_end() {
+        let blocks = 8_388_608;
+        let mut card = SdCard::sparse(blocks, 8).unwrap(); card.state = State::Tran;
+        assert!(card.command(25, blocks - 2).accept_write);
+        assert_eq!(card.stream_left(), 1024);
+        card.write_chunk(&[0x61; 768]); card.write_chunk(&[0x62; 256]);
+        assert_eq!(card.command(18, blocks - 2).read_bytes, Some(1024));
+        let data = card.read_chunk(1024);
+        assert_eq!(&data[..768], &[0x61; 768]); assert_eq!(&data[768..], &[0x62; 256]);
+    }
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn sparse_preflight_funds_only_the_actual_transfer() {
+        let mut card = SdCard::sparse(8_388_608, 2).unwrap(); card.state = State::Tran;
+        assert!(!card.command_with_data_len(25, 8_388_607, 1024).accept_write);
+        assert!(card.command_with_data_len(25, 50, 1024).accept_write);
+        card.write_chunk(&[0x31; 1024]);
+        assert!(!card.command_with_data_len(24, 52, 512).accept_write);
+        assert_eq!(card.command(18, 50).read_bytes, Some(4096));
+        assert_eq!(card.read_chunk(1024), vec![0x31; 1024]);
+    }
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn sparse_transfer_covers_a_fat32_cluster_without_truncation() {
+        let mut card = SdCard::sparse(8_388_608, 64).unwrap(); card.state = State::Tran;
+        let payload = vec![0x73; 32_768];
+        assert!(card.command_with_data_len(25, 123, payload.len() as u32).accept_write);
+        card.write_chunk(&payload);
+        assert_eq!(card.command_with_data_len(18, 123, payload.len() as u32).read_bytes, Some(32_768));
+        assert_eq!(card.read_chunk(payload.len()), payload);
+        assert!(!card.command_with_data_len(25, 123, 65_537).accept_write);
+        assert!(card.command_with_data_len(25, 123, 512).accept_write);
+        card.write_chunk(&[0x29; 1024]); // bytes beyond the funded transfer are not consumed
+        assert_eq!(card.command(17, 124).read_bytes, Some(512));
+        assert_eq!(card.read_chunk(512), vec![0x73; 512]);
+    }
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn aborted_sparse_transfer_does_not_leak_reserved_sectors() {
+        let mut card = SdCard::sparse(8_388_608, 1).unwrap(); card.state = State::Tran;
+        assert!(card.command_with_data_len(24, 7, 512).accept_write);
+        // A new command cancels an unconsumed reservation, not an acknowledged write.
+        assert!(card.command_with_data_len(24, 8, 512).accept_write);
+        card.write_chunk(&[0x7a; 512]);
+        assert_eq!(card.command(17, 7).read_bytes, Some(512));
+        assert_eq!(card.read_chunk(512), vec![0; 512]);
+        assert_eq!(card.command(17, 8).read_bytes, Some(512));
+        assert_eq!(card.read_chunk(512), vec![0x7a; 512]);
+    }
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn power_loss_releases_unwritten_sparse_reservations() {
+        let mut card = SdCard::sparse(8_388_608, 1).unwrap(); card.state = State::Tran;
+        assert!(card.command_with_data_len(24, 7, 512).accept_write);
+        card.set_power(false);
+        assert!(card.sparse.as_ref().unwrap().reserved.is_empty());
+        assert_eq!(card.stream_left(), 0);
+    }
 
     /// The canonical SD frame: CMD0 GO_IDLE (0x40 00 00 00 00) transmits 0x95 = (0x4a << 1) | 1.
     /// The former bit-0-entry/0x12-mask loop produced 0x04 (wire 0x09), which was non-spec and

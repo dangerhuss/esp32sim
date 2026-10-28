@@ -19,6 +19,7 @@ esp32sim-wasm-jit = { path = "../wasm-jit" }
 xtensa-lx7 = { path = "../xtensa-lx7" }
 
 [features]
+sparse-sd = ["esp-periph/sparse-sd"]
 # The inline data-cache probe of the timing model; it is emitted only once the model is switched on.
 default = ["cache-inline"]
 jit-tests = ["xtensa-lx7/wasm-jit-tests"]

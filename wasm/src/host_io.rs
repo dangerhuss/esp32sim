@@ -6,6 +6,8 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 pub(super) type Entropy = Rc<RefCell<VecDeque<u32>>>;
 const ENTROPY_WORDS: usize = 4096;
 const MAX_CARD_BYTES: usize = 64 << 20;
+#[cfg(feature = "sparse-sd")]
+const MAX_SPARSE_SECTORS: usize = 131_072;
 
 /// Raw analog-pad input for the chip's actual ADC conversion boundary.
 /// Returns one for an unsupported pad or a value outside the 12-bit range.
@@ -45,6 +47,37 @@ pub unsafe extern "C" fn esp32sim_sd_attach(e: *mut Emu, ptr: *const u8, len: us
         MachineKind::S3(m) => m.bus.periph.sdmmc.attach_card(image),
         _ => return 1,
     }
+    0
+}
+
+/// Attach an S3-only, bounded sparse SDHC fixture before boot.
+/// Wire format: `SDS1`, capacity in sectors, record count and funded-sector
+/// limit (all u32 LE), followed by sorted unique (u32 LE sector, 512 bytes)
+/// records. Omitted sectors read as zero. An invalid fixture leaves any
+/// previous card untouched. The ordinary complete-image snapshot ABI refuses
+/// sparse cards; it cannot represent their contents or custody.
+///
+/// # Safety
+/// `e` is an exclusively borrowed live emulator. `ptr` is readable for `len` bytes.
+#[cfg(feature = "sparse-sd")]
+#[no_mangle]
+pub unsafe extern "C" fn esp32sim_sd_attach_sparse(e: *mut Emu, ptr: *const u8, len: usize) -> u32 {
+    let e = unsafe { &mut *e };
+    if e.booted || ptr.is_null() || !(16..=MAX_CARD_BYTES).contains(&len) || !matches!(e.m, MachineKind::S3(_)) { return 1; }
+    let data = unsafe { bytes(ptr, len) };
+    if &data[..4] != b"SDS1" { return 1; }
+    let word = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().expect("header checked"));
+    let capacity = word(4); let count = word(8) as usize; let limit = word(12) as usize;
+    if limit > MAX_SPARSE_SECTORS || count > limit || count.checked_mul(516).and_then(|n| n.checked_add(16)) != Some(len) { return 1; }
+    let Some(mut card) = esp_periph::sdcard::SdCard::sparse(capacity, limit) else { return 1; };
+    let mut previous = None;
+    for record in data[16..].as_chunks::<516>().0 {
+        let sector = u32::from_le_bytes(record[..4].try_into().expect("record checked"));
+        if previous.is_some_and(|p| sector <= p) || !card.seed_sector(sector, &record[4..]) { return 1; }
+        previous = Some(sector);
+    }
+    let MachineKind::S3(m) = &mut e.m else { return 1; };
+    m.bus.periph.sdmmc.attach_model(card);
     0
 }
 
@@ -119,6 +152,51 @@ mod tests {
     use super::*;
     use crate::{esp32sim_delete, esp32sim_new};
     use esp_periph::device::Device;
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn sparse_sd_fixture_is_bounded_atomic_and_never_masquerades_as_a_dense_snapshot() {
+        fn fixture(sectors: &[u32], limit: u32) -> Vec<u8> {
+            let mut b = b"SDS1".to_vec();
+            b.extend(62_500_864u32.to_le_bytes());
+            b.extend((sectors.len() as u32).to_le_bytes());
+            b.extend(limit.to_le_bytes());
+            for &sector in sectors { b.extend(sector.to_le_bytes()); b.extend([0xa5; 512]); }
+            b
+        }
+        unsafe {
+            let e = esp32sim_new(b"x4pro".as_ptr(), 5, 16, 8);
+            let dense = vec![0x53; 4096];
+            assert_eq!(esp32sim_sd_attach(e, dense.as_ptr(), dense.len()), 0);
+            let duplicate = fixture(&[20_000_000, 20_000_000], 4);
+            assert_eq!(esp32sim_sd_attach_sparse(e, duplicate.as_ptr(), duplicate.len()), 1);
+            let excessive = fixture(&[20_000_000], MAX_SPARSE_SECTORS as u32 + 1);
+            assert_eq!(esp32sim_sd_attach_sparse(e, excessive.as_ptr(), excessive.len()), 1);
+            let bad_extent = fixture(&[62_500_864], 4);
+            assert_eq!(esp32sim_sd_attach_sparse(e, bad_extent.as_ptr(), bad_extent.len()), 1);
+            assert_eq!(esp32sim_sd_len(e), dense.len());
+            let mut copy = vec![0; dense.len()];
+            assert_eq!(esp32sim_sd_copy(e, copy.as_mut_ptr(), copy.len()), 0);
+            assert_eq!(copy, dense);
+            let good = fixture(&[20_000_000], 4);
+            assert_eq!(esp32sim_sd_attach_sparse(e, good.as_ptr(), good.len() - 1), 1);
+            assert_eq!(esp32sim_sd_attach_sparse(e, good.as_ptr(), good.len()), 0);
+            assert_eq!(esp32sim_sd_len(e), 0);
+            assert_eq!(esp32sim_sd_copy(e, copy.as_mut_ptr(), copy.len()), 1);
+            let MachineKind::S3(m) = &mut (*e).m else { panic!("wrong chip") };
+            let card = m.bus.periph.sdmmc.card_mut().unwrap();
+            assert_eq!(card.capacity_blocks(), 62_500_864);
+            card.set_power(true);
+            card.command(0,0); card.command(8,0x1aa); card.command(55,0); card.command(41,(1 << 30) | 0x00ff_8000);
+            card.command(55,0); card.command(41,(1 << 30) | 0x00ff_8000); card.command(2,0); card.command(3,0); card.command(7,1 << 16);
+            assert_eq!(card.command(17,20_000_000).read_bytes, Some(512));
+            assert_eq!(card.read_chunk(512), vec![0xa5; 512]);
+            esp32sim_delete(e);
+            let c3 = esp32sim_new(b"esp32c3".as_ptr(), 7, 16, 0);
+            assert_eq!(esp32sim_sd_attach_sparse(c3, good.as_ptr(), good.len()), 1);
+            esp32sim_delete(c3);
+        }
+    }
 
     #[test]
     fn raw_adc_pad_input_is_bounded_and_reaches_the_c3_pad() {

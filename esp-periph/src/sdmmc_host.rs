@@ -92,6 +92,12 @@ impl SdMmcHost {
         self.fifo.clear();
         self.rintsts |= INT_CD;                                    // insertion raises CD
     }
+    /// Attach a prepared card model, including a sparse SDHC image.
+    #[cfg(feature = "sparse-sd")]
+    pub fn attach_model(&mut self, card: SdCard) {
+        if self.card.is_some() { self.rintsts |= INT_CD; }
+        self.card = Some(card); self.data = None; self.fifo.clear(); self.rintsts |= INT_CD;
+    }
     /// Remove the card; commands time out until another is attached.
     pub fn detach_card(&mut self) {
         self.card = None;
@@ -102,6 +108,9 @@ impl SdMmcHost {
     pub fn card(&self) -> Option<&SdCard> { self.card.as_ref() }
     pub fn card_mut(&mut self) -> Option<&mut SdCard> { self.card.as_mut() }
     /// The attached image (padded to the card's CSD capacity), for host-side save-back.
+    #[cfg(feature = "sparse-sd")]
+    pub fn image(&self) -> Option<&[u8]> { self.card.as_ref().and_then(SdCard::dense_image) }
+    #[cfg(not(feature = "sparse-sd"))]
     pub fn image(&self) -> Option<&[u8]> { self.card.as_ref().map(SdCard::image) }
     /// Bytes written since attach.
     pub fn dirty_bytes(&self) -> u32 { self.card.as_ref().map_or(0, SdCard::dirty_bytes) }
@@ -254,6 +263,9 @@ impl SdMmcHost {
             return;
         };
         let bytcnt = self.bytcnt;
+        #[cfg(feature = "sparse-sd")]
+        let reply: CardReply = if card.is_sparse() { card.command_with_data_len(index, self.cmdarg, bytcnt) } else { card.command(index, self.cmdarg) };
+        #[cfg(not(feature = "sparse-sd"))]
         let reply: CardReply = card.command(index, self.cmdarg);
         if self.log { eprintln!("[sdmmc] CMD{index} arg={:#x} response={:?} bytes={bytcnt}", self.cmdarg, reply.response); }
         match reply.response {
@@ -261,6 +273,21 @@ impl SdMmcHost {
             None => self.rintsts |= if expect_response { INT_RTO | INT_CMD_DONE } else { INT_CMD_DONE },
         }
         if !data { return; }
+        // The sparse backing is bounded by its declared media geometry; never
+        // silently truncate or wedge a transfer that crosses the last sector.
+        #[cfg(feature = "sparse-sd")]
+        if card.is_sparse() && ((write && reply.accept_write && bytcnt > card.stream_left()) ||
+            (!write && reply.read_bytes.is_some_and(|n| bytcnt > n))) {
+            self.rintsts |= INT_DRTO;
+            return;
+        }
+        // A sparse card's resource refusal must not complete successfully in
+        // FIFO mode. Preserve the existing PIO behavior for other R1 failures.
+        #[cfg(feature = "sparse-sd")]
+        if card.is_sparse() && write && !reply.accept_write {
+            self.rintsts |= INT_DRTO;
+            return;
+        }
         if self.ctrl & (1 << 25) != 0 {                            // CTRL.use_internal_dma
             if self.ram.read(0x80) & (1 << 7) == 0 { return; }     // BMOD.enable
             if (write && !reply.accept_write) || (!write && reply.read_bytes.is_none()) {
@@ -646,6 +673,45 @@ mod tests {
         assert_eq!(x4.read(0x5c), 512, "TCBCNT counts the transfer");
         assert_eq!(x4.read(0x60), 512, "TBBCNT counts the transfer");
         assert_eq!(x4.read(0x48) & (1 << 10), 0, "data FSM idle after completion");
+    }
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn sparse_fifo_exhaustion_raises_controller_error_and_preserves_data() {
+        let mut x4 = X4::new(None);
+        x4.host.attach_model(SdCard::sparse(62_500_864, 1).unwrap());
+        assert_eq!(x4.initialize(), 62_500_864);
+        let high = 20_000_000;
+        x4.block_write(high, &[0x6b; 512]).unwrap();
+        assert_eq!(x4.block_read(high).unwrap(), [0x6b; 512]);
+        assert_eq!(x4.block_write(high + 1, &[0xff; 512]), Err("controller"));
+        assert_ne!(x4.read(0x44) & INT_DRTO, 0);
+        assert_eq!(x4.host.dirty_bytes(), 512);
+        assert_eq!(x4.block_read(high).unwrap(), [0x6b; 512]);
+        assert!(x4.host.image().is_none(), "sparse is not a dense snapshot");
+        x4.start_block(high + 2);
+        x4.write(0, 1 << 25); x4.write(0x80, 1 << 7);
+        x4.issue(24 | (1 << 10));
+        assert_eq!(x4.result(), Err("controller"));
+        assert_ne!(x4.read(0x44) & INT_DRTO, 0);
+        assert!(!x4.host.dma_pending());
+        assert_eq!(x4.host.dirty_bytes(), 512);
+    }
+
+    #[cfg(feature = "sparse-sd")]
+    #[test]
+    fn sparse_transfer_crossing_end_refuses_before_any_write() {
+        let mut x4 = X4::new(None);
+        let capacity = 62_500_864;
+        x4.host.attach_model(SdCard::sparse(capacity, 8).unwrap());
+        assert_eq!(x4.initialize(), capacity);
+        x4.start_block(capacity - 1);
+        x4.write(0x20, 1024);
+        x4.issue(25 | (1 << 10));
+        assert_eq!(x4.result(), Err("controller"));
+        assert_ne!(x4.read(0x44) & INT_DRTO, 0);
+        assert_eq!(x4.host.dirty_bytes(), 0);
+        assert_eq!(x4.block_read(capacity - 1).unwrap(), [0; 512]);
     }
 
     #[test]
