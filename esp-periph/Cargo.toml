@@ -7,3 +7,6 @@ description = "Register-level models of the peripheral IP Espressif chips share,
 
 [dependencies]
 emu-core = { path = "../emu-core" }
+
+[features]
+sparse-sd = []
