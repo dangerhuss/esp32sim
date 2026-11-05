@@ -51,7 +51,13 @@ impl X3Panel {
             2=>{self.powered=false;self.busy(2_000,false);},
             0x12=>{
                 if !self.powered || !self.old_valid || !self.new_valid || self.luts!=31
-                    || (!self.full && self.old!=self.shown) || self.current_invalid {
+                    // A complete inverted-NEW baseline drives every pixel toward NEW,
+                    // in this nominal firmware-contract model. Crusty's normal X3 startup
+                    // uses this differential seed after reset; it does not claim
+                    // that controller OLD already matches the retained image.
+                    || (!self.full && self.old!=self.shown
+                        && !self.old.iter().zip(&self.new).all(|(old,new)| *old==!*new))
+                    || self.current_invalid {
                     self.fault();return;
                 }
                 self.busy(if self.full {600_000}else{150_000},true);
@@ -101,7 +107,7 @@ mod tests {
     fn bank(p:&mut X3Panel,full:bool){for c in 0x20..=0x24{cmd(p,c);let mut b=[0;42];b[1]=if full{0x18}else{6};data(p,&b);}}
     #[test]
     fn real_planes_publish_only_after_busy_and_require_confirmed_differential_baseline(){
-        let mut p=fixture();plane(&mut p,0x10,255);plane(&mut p,0x13,0);bank(&mut p,true);
+        let mut p=fixture();plane(&mut p,0x10,255);plane(&mut p,0x13,0x55);bank(&mut p,true);
         cmd(&mut p,4);p.advance(320_000);cmd(&mut p,0x12);
         assert_eq!(p.frames,0);assert_eq!(p.display().2[0],65535);
         p.advance(p.deadline().unwrap());assert_eq!(p.frames,1);assert_eq!(p.display().2[0],0);
@@ -115,4 +121,48 @@ mod tests {
         p.advance(deadline-1);assert_eq!(p.frames,0);p.advance(deadline);assert_eq!(p.frames,1);
         p.gpio(deadline+1,1<<5,0);assert!(!p.old_valid && !p.new_valid);assert_eq!(p.frames,1);
     }
+    #[test]
+    fn inverted_new_baseline_drives_every_pixel_without_known_retained_image() {
+        let mut p=fixture();
+        // The retained image is white. OLD is an exact complement of a mixed
+        // NEW plane, so every pixel receives a transition toward its target.
+        plane(&mut p,0x10,0x55);plane(&mut p,0x13,0xaa);bank(&mut p,false);
+        cmd(&mut p,4);p.advance(320_000);cmd(&mut p,0x12);
+        assert_eq!(p.faults,0);assert_eq!(p.frames,0);
+        let deadline=p.deadline().expect("complete inverted baseline starts BUSY");
+        p.advance(deadline-1);assert_eq!(p.frames,0);
+        p.advance(deadline);assert_eq!(p.frames,1);
+        assert_eq!(p.shown,p.new);
+    }
+    #[test]
+    fn one_unconfirmed_bit_refuses_inverted_baseline_and_reset_keeps_retained_glass() {
+        let mut p=fixture();
+        plane(&mut p,0x10,0x55);plane(&mut p,0x13,0xaa);bank(&mut p,false);
+        // One unchanged pixel still disagrees with retained white glass.
+        cmd(&mut p,0x10);data(&mut p,&vec![0x55;BYTES-1]);data(&mut p,&[0x54]);cmd(&mut p,0x11);
+        cmd(&mut p,4);p.advance(320_000);cmd(&mut p,0x12);
+        assert_eq!(p.faults,1);assert_eq!(p.frames,0);assert!(p.deadline().is_none());
+        assert!(p.shown.iter().all(|b|*b==255));
+        p.gpio(p.cycle+1,1<<5,0);
+        assert_eq!(p.faults,1);assert!(p.shown.iter().all(|b|*b==255));
+    }
+
+    #[test]
+    fn inverted_new_recovery_after_reset_still_requires_complete_planes() {
+        let mut p=fixture();plane(&mut p,0x10,255);plane(&mut p,0x13,0x33);bank(&mut p,true);
+        cmd(&mut p,4);p.advance(320_000);cmd(&mut p,0x12);p.advance(p.deadline().unwrap());
+        p.gpio(p.cycle+1,1<<5,0);
+        assert!(p.shown.iter().all(|b|*b==0x33));
+        // A controller reset does not erase retained glass. Inverted recovery
+        // remains an explicit complete-plane protocol, rather than readiness.
+        plane(&mut p,0x10,0x55);plane(&mut p,0x13,0xaa);bank(&mut p,false);
+        cmd(&mut p,4);p.advance(p.deadline().unwrap());cmd(&mut p,0x12);
+        p.advance(p.deadline().unwrap());assert_eq!(p.frames,2);assert_eq!(p.faults,0);
+        p.gpio(p.cycle+1,1<<5,0);
+        cmd(&mut p,0x10);data(&mut p,&vec![0x55;BYTES-1]);cmd(&mut p,0x11);
+        plane(&mut p,0x13,0xaa);bank(&mut p,false);
+        cmd(&mut p,4);p.advance(p.deadline().unwrap());cmd(&mut p,0x12);
+        assert_eq!(p.frames,2);assert!(p.deadline().is_none());assert!(p.faults>0);
+    }
+
 }
